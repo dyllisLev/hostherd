@@ -11,6 +11,7 @@ import Database from 'better-sqlite3';
 import { Store } from '../src/store.js';
 import { createApp, trustProxy } from '../src/app.js';
 import { textChunk } from '../src/mcp.js';
+import { VERSION } from '../src/version.js';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function eventually(predicate: () => boolean) {
@@ -466,4 +467,9 @@ test('TRUST_PROXY accepts hop counts, booleans and address lists', () => {
   assert.equal(trustProxy('2'), 2);
   assert.equal(trustProxy('false'), false);
   assert.equal(trustProxy('loopback, 10.0.0.0/8'), 'loopback, 10.0.0.0/8');
+});
+
+test('reported version matches the release version in package.json', async () => {
+  const root = JSON.parse(await readFile(new URL('../../../package.json', import.meta.url), 'utf8'));
+  assert.equal(VERSION, root.version);
 });
