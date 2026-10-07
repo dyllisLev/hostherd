@@ -1,22 +1,33 @@
-# Hostherd central server. Copy .env.example to .env, set PUBLIC_URL, then:
-#   docker compose up -d
-# Put an HTTPS reverse proxy in front of it (see docs/install.md).
+# Hostherd — standard Docker Compose setup
+#
+#   1. Download this file, Caddyfile and .env.example into one directory
+#      (for example /opt/hostherd) and copy .env.example to .env.
+#   2. In .env set PUBLIC_URL to the https:// address that points at this host.
+#      Keep COMPOSE_PROFILES=caddy to run the bundled HTTPS proxy (Caddy), or
+#      clear it if you already run your own reverse proxy.
+#   3. Start it:  docker compose up -d
+#   4. Read the one-time setup token and create the administrator:
+#        docker compose logs hostherd | grep "setup token"
+#
+# Full guide: docs/install.md. Operations (update, backup, restore): docs/operations.md.
 name: hostherd
 
 services:
+  # Central server: web console, MCP endpoint (/mcp) and agent connections (/agent).
   hostherd:
     image: ghcr.io/dyllislev/hostherd:${HOSTHERD_VERSION:-latest}
     restart: unless-stopped
     environment:
-      # The public HTTPS address of this server, as clients and agents reach it.
+      # Public HTTPS address used by browsers, MCP clients and agents. Required.
       PUBLIC_URL: ${PUBLIC_URL:?Set PUBLIC_URL in .env}
-      # Proxy hops (or proxy addresses) to trust for the client IP. Default: 1.
+      # Reverse proxies to trust for the client address (login rate limit). Default: 1.
       TRUST_PROXY: ${TRUST_PROXY:-1}
     ports:
-      # Only the reverse proxy on this host should reach the container.
+      # Plain HTTP for a reverse proxy on this host. Keep it on 127.0.0.1:
+      # Hostherd needs HTTPS in front of it and must not be reached directly.
       - "${HOSTHERD_BIND:-127.0.0.1}:${HOSTHERD_PORT:-3000}:3000"
     volumes:
-      # Database, OAuth keys, tokens, job output and file transfers.
+      # Database, OAuth keys, tokens, job output and file transfers. Back this up.
       - data:/data
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
@@ -24,8 +35,36 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-    # Lets the server close connections and finish writes on shutdown.
+    # Time to close connections and finish writes on shutdown.
     stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  # Optional HTTPS reverse proxy, enabled by the "caddy" profile (COMPOSE_PROFILES=caddy in .env).
+  # Gets a certificate for the host in PUBLIC_URL automatically (Let's Encrypt)
+  # and passes WebSockets, streaming and headers through without extra settings.
+  # Needs ports 80 and 443 free on this host and DNS pointing at it.
+  caddy:
+    image: caddy:2
+    profiles: ["caddy"]
+    restart: unless-stopped
+    depends_on:
+      hostherd:
+        condition: service_healthy
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:?Set PUBLIC_URL in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and ACME account; keep them to avoid re-issuing on restart.
+      - caddy-data:/data
+      - caddy-config:/config
     logging:
       driver: json-file
       options:
@@ -35,3 +74,7 @@ services:
 volumes:
   data:
     name: hostherd-data
+  caddy-data:
+    name: hostherd-caddy-data
+  caddy-config:
+    name: hostherd-caddy-config

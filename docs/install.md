@@ -2,7 +2,7 @@
 
 [한국어](ko/install.md)
 
-This guide sets up the Hostherd central server with Docker Compose behind an HTTPS reverse proxy, then connects your first server and an MCP client.
+This guide sets up the Hostherd central server with Docker Compose behind HTTPS, then connects your first server and an MCP client. The standard setup in `compose.yaml` includes an optional Caddy proxy that obtains the certificate for you; you can use your own reverse proxy instead.
 
 ## Requirements
 
@@ -10,7 +10,7 @@ This guide sets up the Hostherd central server with Docker Compose behind an HTT
 
 - A Linux host (amd64 or arm64) with [Docker Engine](https://docs.docker.com/engine/install/) and the Compose plugin (`docker compose version` should work).
 - A domain name pointing at that host, for example `hostherd.example.com`.
-- An HTTPS reverse proxy on the same host. Hostherd itself speaks plain HTTP on `127.0.0.1:3000` and refuses to start unless `PUBLIC_URL` is `https://`. The proxy must pass WebSocket upgrades and must not buffer streamed responses. Examples for Caddy and nginx are below.
+- HTTPS in front of Hostherd. Hostherd itself speaks plain HTTP on `127.0.0.1:3000` and refuses to start unless `PUBLIC_URL` is `https://`. Either use the bundled Caddy proxy (default, step 4A) or your own reverse proxy (step 4B).
 - Inbound TCP 443 (and 80 for certificate issuance) open to the browsers, MCP clients and target servers that will use it. Port 3000 should stay closed to the outside.
 
 **Target servers**
@@ -25,8 +25,11 @@ This guide sets up the Hostherd central server with Docker Compose behind an HTT
 ```sh
 mkdir -p /opt/hostherd && cd /opt/hostherd
 curl -fsSLO https://raw.githubusercontent.com/dyllislev/hostherd/main/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/dyllislev/hostherd/main/Caddyfile
 curl -fsSL https://raw.githubusercontent.com/dyllislev/hostherd/main/.env.example -o .env
 ```
+
+`compose.yaml` is the standard setup and explains every setting in comments. `Caddyfile` is only used by the bundled proxy.
 
 ## 2. Configure `.env`
 
@@ -38,6 +41,7 @@ PUBLIC_URL=https://hostherd.example.com
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `COMPOSE_PROFILES` | `caddy` | `caddy` runs the bundled HTTPS proxy (step 4A). Leave it empty when you use your own reverse proxy (step 4B). |
 | `PUBLIC_URL` | (required) | The HTTPS address users, MCP clients and agents use. It must match exactly what the browser shows (scheme and host, no trailing slash); requests from another origin are rejected. |
 | `HOSTHERD_VERSION` | `latest` | Image tag. Set a version such as `0.1.0` to pin it. |
 | `HOSTHERD_BIND` | `127.0.0.1` | Host address the container port is published on. |
@@ -72,7 +76,27 @@ docker compose logs hostherd | grep "setup token"
 
 The token is also stored in the data volume as `setup-token` and is deleted once the admin account exists.
 
-## 4. Configure the reverse proxy
+## 4. HTTPS
+
+### 4A. Bundled Caddy (default)
+
+With `COMPOSE_PROFILES=caddy`, `docker compose up -d` also starts Caddy. It serves `PUBLIC_URL`, obtains and renews a Let's Encrypt certificate, redirects HTTP to HTTPS and passes WebSockets, streaming and headers to Hostherd. You only need:
+
+- a DNS record for the host in `PUBLIC_URL` pointing at this server,
+- ports 80 and 443 free on this host and reachable from the internet (80 is used for certificate issuance).
+
+Check the certificate and the proxy:
+
+```sh
+docker compose logs caddy | grep -i certificate
+curl https://hostherd.example.com/healthz
+```
+
+Certificates are kept in the `hostherd-caddy-data` volume. To use your own Caddy options (for example an internal CA or a DNS challenge), edit `Caddyfile` and run `docker compose restart caddy`.
+
+### 4B. Your own reverse proxy
+
+Set `COMPOSE_PROFILES=` (empty) in `.env` and run `docker compose up -d` again; only Hostherd runs and listens on `127.0.0.1:3000`.
 
 The proxy forwards everything to `127.0.0.1:3000`. These paths need special handling, and a catch-all rule covers them as long as WebSockets and streaming work:
 
@@ -82,7 +106,7 @@ The proxy forwards everything to `127.0.0.1:3000`. These paths need special hand
 
 Pass `Host`, `X-Forwarded-For` and `X-Forwarded-Proto`. Use long read timeouts so idle terminals stay connected. The proxy must also forward the `Authorization` header on WebSocket upgrades: agents authenticate with it. Some proxies drop it by default (for example Zoraxy, until custom WebSocket headers are enabled for the route); agents then log `central handshake HTTP 401`.
 
-### Caddy
+#### Caddy on the host
 
 Caddy obtains certificates automatically and handles WebSockets and streaming without extra settings.
 
@@ -92,7 +116,7 @@ hostherd.example.com {
 }
 ```
 
-### nginx
+#### nginx
 
 ```nginx
 map $http_upgrade $connection_upgrade {

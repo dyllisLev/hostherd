@@ -10,7 +10,7 @@
 
 - [Docker Engine](https://docs.docker.com/engine/install/)과 Compose 플러그인이 설치된 Linux 호스트(amd64 또는 arm64). `docker compose version`이 동작해야 합니다.
 - 그 호스트를 가리키는 도메인. 예: `hostherd.example.com`
-- 같은 호스트의 HTTPS 리버스 프록시. Hostherd는 `127.0.0.1:3000`에서 일반 HTTP로 동작하며, `PUBLIC_URL`이 `https://`가 아니면 시작하지 않습니다. 프록시는 WebSocket 업그레이드를 전달하고 스트리밍 응답을 버퍼링하지 않아야 합니다. Caddy와 nginx 예시는 아래에 있습니다.
+- Hostherd 앞단의 HTTPS. Hostherd는 `127.0.0.1:3000`에서 일반 HTTP로 동작하며, `PUBLIC_URL`이 `https://`가 아니면 시작하지 않습니다. 함께 들어 있는 Caddy 프록시(기본값, 4A단계)를 쓰거나 직접 운영하는 리버스 프록시(4B단계)를 씁니다.
 - 사용할 브라우저·MCP 클라이언트·대상 서버에서 들어오는 TCP 443(인증서 발급용 80 포함). 3000 포트는 외부에 열지 않습니다.
 
 **대상 서버**
@@ -25,8 +25,11 @@
 ```sh
 mkdir -p /opt/hostherd && cd /opt/hostherd
 curl -fsSLO https://raw.githubusercontent.com/dyllislev/hostherd/main/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/dyllislev/hostherd/main/Caddyfile
 curl -fsSL https://raw.githubusercontent.com/dyllislev/hostherd/main/.env.example -o .env
 ```
+
+`compose.yaml`은 표준 구성이며 모든 설정을 주석으로 설명합니다. `Caddyfile`은 함께 들어 있는 프록시만 사용합니다.
 
 ## 2. `.env` 설정
 
@@ -38,6 +41,7 @@ PUBLIC_URL=https://hostherd.example.com
 
 | 변수 | 기본값 | 의미 |
 |---|---|---|
+| `COMPOSE_PROFILES` | `caddy` | `caddy`이면 함께 들어 있는 HTTPS 프록시를 실행합니다(4A단계). 직접 운영하는 리버스 프록시를 쓰면 비워 둡니다(4B단계). |
 | `PUBLIC_URL` | (필수) | 사용자·MCP 클라이언트·에이전트가 쓰는 HTTPS 주소. 브라우저에 보이는 주소(스킴과 호스트, 끝의 `/` 없이)와 정확히 같아야 하며, 다른 출처의 요청은 거부됩니다. |
 | `HOSTHERD_VERSION` | `latest` | 이미지 태그. `0.1.0`처럼 버전을 지정해 고정할 수 있습니다. |
 | `HOSTHERD_BIND` | `127.0.0.1` | 컨테이너 포트를 게시할 호스트 주소. |
@@ -72,7 +76,27 @@ docker compose logs hostherd | grep "setup token"
 
 이 코드는 데이터 볼륨의 `setup-token` 파일에도 저장되며, 관리자 계정을 만들면 삭제됩니다.
 
-## 4. 리버스 프록시 설정
+## 4. HTTPS
+
+### 4A. 함께 들어 있는 Caddy (기본값)
+
+`COMPOSE_PROFILES=caddy`이면 `docker compose up -d`가 Caddy도 함께 시작합니다. Caddy는 `PUBLIC_URL` 주소로 서비스하고, Let's Encrypt 인증서를 발급·갱신하며, HTTP를 HTTPS로 넘기고, WebSocket·스트리밍·헤더를 Hostherd에 그대로 전달합니다. 필요한 것은 다음뿐입니다.
+
+- `PUBLIC_URL`의 호스트가 이 서버를 가리키는 DNS 레코드
+- 이 호스트에서 비어 있고 인터넷에서 접근 가능한 80·443 포트(80은 인증서 발급에 씁니다)
+
+인증서와 프록시를 확인합니다.
+
+```sh
+docker compose logs caddy | grep -i certificate
+curl https://hostherd.example.com/healthz
+```
+
+인증서는 `hostherd-caddy-data` 볼륨에 보관됩니다. 내부 CA나 DNS 인증 같은 Caddy 설정을 쓰려면 `Caddyfile`을 고친 뒤 `docker compose restart caddy`를 실행합니다.
+
+### 4B. 직접 운영하는 리버스 프록시
+
+`.env`에서 `COMPOSE_PROFILES=`(빈 값)으로 바꾸고 `docker compose up -d`를 다시 실행합니다. Hostherd만 실행되며 `127.0.0.1:3000`에서 기다립니다.
 
 프록시는 모든 요청을 `127.0.0.1:3000`으로 전달합니다. 아래 경로는 별도 처리가 필요하지만, WebSocket과 스트리밍이 동작하면 전체 전달 규칙 하나로 충분합니다.
 
@@ -82,7 +106,7 @@ docker compose logs hostherd | grep "setup token"
 
 `Host`, `X-Forwarded-For`, `X-Forwarded-Proto`를 전달합니다. 쉬고 있는 터미널이 끊기지 않도록 읽기 시간 제한을 길게 둡니다. WebSocket 업그레이드 요청의 `Authorization` 헤더도 전달해야 합니다. 에이전트가 이 헤더로 인증합니다. 기본으로 이 헤더를 빼는 프록시가 있으며(예: Zoraxy는 경로에서 WebSocket 사용자 지정 헤더를 켜기 전까지), 이때 에이전트 로그에 `central handshake HTTP 401`이 남습니다.
 
-### Caddy
+#### 호스트의 Caddy
 
 Caddy는 인증서를 자동으로 발급하며 WebSocket과 스트리밍도 추가 설정 없이 처리합니다.
 
@@ -92,7 +116,7 @@ hostherd.example.com {
 }
 ```
 
-### nginx
+#### nginx
 
 ```nginx
 map $http_upgrade $connection_upgrade {

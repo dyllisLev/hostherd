@@ -146,6 +146,8 @@ test('MCP request logs correlate real transport, jobs, RPCs and retries without 
   assert.notEqual(retried.traceId, started.traceId);
   assert.equal(retried.log.request.jobId, state.jobId);
   assert.equal(f.rpc.filter(rpc => rpc.method === 'job.start').length, 1);
+  // The fixture agent streams output asynchronously; wait until all of it is stored.
+  for (const deadline = Date.now() + 10_000; f.app.store.job(state.jobId).outputBytes !== f.output.length && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 50));
   const job = f.app.store.job(state.jobId);
   f.app.store.saveJob(f.serverId, { ...job, status: 'completed', exitCode: 0, endedAt: new Date().toISOString() });
   const updated = await f.detail(started.traceId);

@@ -17,18 +17,19 @@ It has two parts: the **central server** (this repository's Docker image), which
 
 ## Quick start
 
-You need Docker with Compose, a domain name, and an HTTPS reverse proxy (Caddy, nginx or similar) that supports WebSockets. See [docs/install.md](docs/install.md) for the full walkthrough.
+You need a Linux host with Docker and Compose, and a domain name pointing at it. The standard `compose.yaml` runs Hostherd with a bundled Caddy proxy that obtains the HTTPS certificate (ports 80 and 443); you can switch it off and use your own reverse proxy. See [docs/install.md](docs/install.md) for the full walkthrough.
 
 ```sh
 mkdir hostherd && cd hostherd
 curl -fsSLO https://raw.githubusercontent.com/dyllislev/hostherd/main/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/dyllislev/hostherd/main/Caddyfile
 curl -fsSL https://raw.githubusercontent.com/dyllislev/hostherd/main/.env.example -o .env
 # Edit .env: set PUBLIC_URL to your HTTPS address
 docker compose up -d
 docker compose logs hostherd | grep "setup token"
 ```
 
-Point your reverse proxy at `127.0.0.1:3000`, open `PUBLIC_URL` in a browser, and create the admin account with the setup token. Then register a server in **Servers → Add server** and run the install command it gives you on that server.
+Open `PUBLIC_URL` in a browser and create the admin account with the setup token. Then register a server in **Servers → Add server** and run the install command it gives you on that server.
 
 The MCP address for AI clients is `<PUBLIC_URL>/mcp`. **Settings → MCP** shows the setup for each client.
 

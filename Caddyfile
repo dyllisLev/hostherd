@@ -1,0 +1,5 @@
+# HTTPS reverse proxy for Hostherd, used by the "caddy" profile in compose.yaml.
+# The site address is PUBLIC_URL from .env; Caddy obtains its certificate automatically.
+{$PUBLIC_URL} {
+	reverse_proxy hostherd:3000
+}

@@ -17,18 +17,19 @@ Hostherd는 직접 운영하는 서버용 MCP 게이트웨이입니다. Claude, 
 
 ## 빠른 시작
 
-Docker와 Compose, 도메인, 그리고 WebSocket을 지원하는 HTTPS 리버스 프록시(Caddy, nginx 등)가 필요합니다. 자세한 절차는 [docs/ko/install.md](docs/ko/install.md)를 봅니다.
+Docker와 Compose가 설치된 Linux 호스트와 그 호스트를 가리키는 도메인이 필요합니다. 표준 `compose.yaml`은 HTTPS 인증서를 자동으로 받는 Caddy 프록시(80·443 포트)와 함께 Hostherd를 실행하며, 이를 끄고 직접 운영하는 리버스 프록시를 쓸 수도 있습니다. 자세한 절차는 [docs/ko/install.md](docs/ko/install.md)를 봅니다.
 
 ```sh
 mkdir hostherd && cd hostherd
 curl -fsSLO https://raw.githubusercontent.com/dyllislev/hostherd/main/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/dyllislev/hostherd/main/Caddyfile
 curl -fsSL https://raw.githubusercontent.com/dyllislev/hostherd/main/.env.example -o .env
 # .env에서 PUBLIC_URL을 HTTPS 주소로 지정
 docker compose up -d
 docker compose logs hostherd | grep "setup token"
 ```
 
-리버스 프록시가 `127.0.0.1:3000`으로 전달하도록 설정하고, 브라우저에서 `PUBLIC_URL`을 열어 초기 설정 코드로 관리자 계정을 만듭니다. 그다음 **서버 → 서버 등록**에서 서버를 등록하고, 발급된 설치 명령을 그 서버에서 실행합니다.
+브라우저에서 `PUBLIC_URL`을 열어 초기 설정 코드로 관리자 계정을 만듭니다. 그다음 **서버 → 서버 등록**에서 서버를 등록하고, 발급된 설치 명령을 그 서버에서 실행합니다.
 
 AI 클라이언트가 쓰는 MCP 주소는 `<PUBLIC_URL>/mcp`입니다. 클라이언트별 설정 방법은 **설정 → MCP 연결**에 있습니다.
 

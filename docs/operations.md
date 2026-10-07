@@ -13,7 +13,7 @@ docker compose ps          # wait for "healthy"
 curl -s https://hostherd.example.com/healthz
 ```
 
-The web console and MCP are unavailable for a few seconds while the container is replaced. Agents reconnect on their own, and jobs and terminals that were running on target servers keep running. Pin a version with `HOSTHERD_VERSION` in `.env` if you prefer to update deliberately. Database changes are applied on start; take a [backup](#backup-and-restore) first if you may want to go back to an older version.
+The web console and MCP are unavailable for a few seconds while the container is replaced. Agents reconnect on their own, and jobs and terminals that were running on target servers keep running. `docker compose pull` also updates the bundled Caddy image when it is enabled. Pin a version with `HOSTHERD_VERSION` in `.env` if you prefer to update deliberately. Database changes are applied on start; take a [backup](#backup-and-restore) first if you may want to go back to an older version.
 
 ## Updating agents
 
@@ -31,7 +31,7 @@ docker compose run --rm --no-deps --user root -v "$PWD/backups:/backup" hostherd
 docker compose start
 ```
 
-Agents reconnect after the restart, and remote jobs keep running meanwhile. Keep backups somewhere private: they contain credentials.
+Agents reconnect after the restart, and remote jobs keep running meanwhile. Keep backups somewhere private: they contain credentials. The bundled Caddy's certificates (`hostherd-caddy-data`) need no backup; Caddy obtains them again.
 
 To restore, stop the container, replace the volume contents, and start it again:
 
@@ -138,7 +138,8 @@ curl -s http://127.0.0.1:3000/healthz
 
 - **Container exits with `PUBLIC_URL must use HTTPS`**: set an `https://` address in `.env`.
 - **Login or saving fails with an origin error**: `PUBLIC_URL` must match the address in the browser exactly, and the proxy must pass `Host` and `X-Forwarded-Proto`.
-- **Terminals or live updates do not work, agents connect and drop**: the reverse proxy is not passing WebSocket upgrades for `/agent` and `/terminal/…`, or is buffering `/api/events`. See the proxy examples in [install.md](install.md#4-configure-the-reverse-proxy).
+- **Terminals or live updates do not work, agents connect and drop**: the reverse proxy is not passing WebSocket upgrades for `/agent` and `/terminal/…`, or is buffering `/api/events`. See [install.md](install.md#4-https).
+- **No HTTPS with the bundled Caddy**: `docker compose logs caddy` shows why the certificate was not issued. Usually the DNS record does not point at this host yet, or ports 80/443 are blocked or used by another service.
 
 ### Agent offline
 
