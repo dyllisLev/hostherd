@@ -55,10 +55,12 @@ export function useLocale(): Locale {
   );
 }
 
+// `{name}` inserts a value; `{name:one|other}` picks a word by whether the value is 1.
 const interpolate = (text: string, values?: Values) =>
-  values ? text.replace(/\{(\w+)\}/g, (match, name: string) => name in values ? String(values[name]) : match) : text;
+  values ? text.replace(/\{(\w+)(?::([^|}]*)\|([^}]*))?\}/g, (match, name: string, one?: string, other?: string) =>
+    !(name in values) ? match : one === undefined ? String(values[name]) : Number(values[name]) === 1 ? one : other!) : text;
 
-/** Looks up a message and fills `{name}` placeholders. */
+/** Looks up a message and fills `{name}` and `{name:one|other}` placeholders. */
 export function t(key: MessageKey, values?: Values): string {
   let node: unknown = messages;
   for (const part of key.split('.')) node = (node as Record<string, unknown>)?.[part];

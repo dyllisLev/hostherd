@@ -4,6 +4,8 @@
 
 Hostherd is a self-hosted MCP gateway to your servers. AI clients such as Claude, ChatGPT, Cursor and VS Code connect to one MCP address and can run commands, read and write files, transfer files and look at screenshots on every server you register. A web console lets you do the same by hand and see what the AI did.
 
+![Hostherd dashboard: pending approvals, AI activity per day, server resources and recent MCP calls](docs/images/dashboard-en.png)
+
 - **Commands, files and terminals** on Linux (systemd), macOS and Windows, amd64 and arm64. Each server runs everything as the OS account you choose at install time.
 - **Web console** with persistent terminals that survive closing the browser, job history and full output, and a request log of every MCP call.
 - **Command approvals**: deletes, overwrites, shutdowns and your own rules can wait for your approval before they run.
@@ -29,6 +31,20 @@ docker compose logs hostherd | grep "setup token"
 Point your reverse proxy at `127.0.0.1:3000`, open `PUBLIC_URL` in a browser, and create the admin account with the setup token. Then register a server in **Servers → Add server** and run the install command it gives you on that server.
 
 The MCP address for AI clients is `<PUBLIC_URL>/mcp`. **Settings → MCP** shows the setup for each client.
+
+## Screenshots
+
+Command approvals: deletes, overwrites and shutdowns requested over MCP wait here until you allow or deny them.
+
+![Command approvals](docs/images/approvals-en.png)
+
+Resources tab of a server: CPU, memory, disk, load and network over the selected range.
+
+![Server resources](docs/images/server-resources-en.png)
+
+A persistent terminal in the browser; the shell keeps running after you close the page.
+
+![Terminal](docs/images/terminal-en.png)
 
 ## Documentation
 

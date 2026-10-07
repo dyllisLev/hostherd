@@ -80,7 +80,7 @@ The proxy forwards everything to `127.0.0.1:3000`. These paths need special hand
 - `/terminal/<id>`: WebSocket used by web terminals.
 - `/api/events`: server-sent events for live updates (do not buffer).
 
-Pass `Host`, `X-Forwarded-For` and `X-Forwarded-Proto`. Use long read timeouts so idle terminals stay connected.
+Pass `Host`, `X-Forwarded-For` and `X-Forwarded-Proto`. Use long read timeouts so idle terminals stay connected. The proxy must also forward the `Authorization` header on WebSocket upgrades: agents authenticate with it. Some proxies drop it by default (for example Zoraxy, until custom WebSocket headers are enabled for the route); agents then log `central handshake HTTP 401`.
 
 ### Caddy
 

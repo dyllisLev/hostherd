@@ -80,7 +80,7 @@ docker compose logs hostherd | grep "setup token"
 - `/terminal/<id>`: 웹 터미널이 쓰는 WebSocket
 - `/api/events`: 실시간 갱신용 server-sent events(버퍼링하지 않음)
 
-`Host`, `X-Forwarded-For`, `X-Forwarded-Proto`를 전달합니다. 쉬고 있는 터미널이 끊기지 않도록 읽기 시간 제한을 길게 둡니다.
+`Host`, `X-Forwarded-For`, `X-Forwarded-Proto`를 전달합니다. 쉬고 있는 터미널이 끊기지 않도록 읽기 시간 제한을 길게 둡니다. WebSocket 업그레이드 요청의 `Authorization` 헤더도 전달해야 합니다. 에이전트가 이 헤더로 인증합니다. 기본으로 이 헤더를 빼는 프록시가 있으며(예: Zoraxy는 경로에서 WebSocket 사용자 지정 헤더를 켜기 전까지), 이때 에이전트 로그에 `central handshake HTTP 401`이 남습니다.
 
 ### Caddy
 
