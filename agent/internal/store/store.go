@@ -65,16 +65,18 @@ func AtomicWrite(path string, b []byte, mode os.FileMode) error {
 	return SyncDir(filepath.Dir(path))
 }
 
-// OpenRegular opens an existing regular file of the runtime state.
+// OpenRegular opens an existing regular file of the runtime state. It refuses
+// hard links: the execution account owns the state directory, and a link to a
+// file it cannot read would otherwise be read by the root agent.
 func OpenRegular(path string) (*os.File, error) {
 	f, err := os.OpenFile(path, readFlags, 0)
 	if err != nil {
 		return nil, err
 	}
-	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() || !singleLink(info) {
 		f.Close()
 		if err == nil {
-			err = fmt.Errorf("%s is not a regular file", path)
+			err = fmt.Errorf("%s is not a regular file with a single link", path)
 		}
 		return nil, err
 	}

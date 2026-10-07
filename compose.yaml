@@ -7,7 +7,7 @@
 #      clear it if you already run your own reverse proxy.
 #   3. Start it:  docker compose up -d
 #   4. Read the one-time setup token and create the administrator:
-#        docker compose logs hostherd | grep "setup token"
+#        docker compose exec hostherd cat /data/setup-token
 #
 # Full guide: docs/install.md. Operations (update, backup, restore): docs/operations.md.
 name: hostherd

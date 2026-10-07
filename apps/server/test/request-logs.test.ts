@@ -10,7 +10,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { WebSocket } from 'ws';
 import { createApp } from '../src/app.js';
 import { Store } from '../src/store.js';
-import { RequestLogs } from '../src/request-logs.js';
+import { RequestLogs, redactText } from '../src/request-logs.js';
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function eventually<T>(read: () => T | Promise<T>, accept: (value: T) => boolean, label: string): Promise<T> {
@@ -222,6 +222,11 @@ test('request logs retain authentication, parse, SDK and remote errors separatel
   assert.equal(unauthorized.request.httpStatus, 401);
   assert.ok(unauthorized.request.failureStage);
   assert.doesNotMatch(JSON.stringify(unauthorized), /INVALID_AUTH_PRIVATE_CANARY|COOKIE_PRIVATE_CANARY/);
+  const unauthCall = await fetch(f.base + '/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'job_start', arguments: { cmd: 'UNAUTH_BODY_PRIVATE_CANARY' } } }) });
+  assert.equal(unauthCall.status, 401);
+  const unauthCallLog = await f.detail(unauthCall.headers.get('X-Hostherd-Trace-Id')!);
+  assert.equal(unauthCallLog.request.arguments, undefined, 'unauthenticated bodies are not recorded');
+  assert.doesNotMatch(JSON.stringify(unauthCallLog), /UNAUTH_BODY_PRIVATE_CANARY/);
 
   const malformed = await fetch(f.base + '/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + f.pat.token }, body: '{"password":"MALFORMED_PRIVATE_CANARY",' });
   assert.equal(malformed.status, 400);
@@ -454,4 +459,12 @@ test('dashboard MCP activity sorts tool calls by kind, separates policy holds fr
     // The day boundary follows the viewer's UTC offset.
     assert.equal(logs.toolActivity(1, 9 * 60, now).days[0].date, '2026-10-06');
   } finally { store.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('redaction stays linear on long inputs', () => {
+  for (const input of ['a-'.repeat(50_000), '-'.repeat(100_000), 'x-token:'.repeat(12_000)]) {
+    const started = performance.now();
+    redactText(input);
+    assert.ok(performance.now() - started < 1000, `redacting ${input.slice(0, 8)}… took too long`);
+  }
 });

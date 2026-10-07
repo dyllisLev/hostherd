@@ -26,10 +26,12 @@ curl -fsSLO https://raw.githubusercontent.com/dyllislev/hostherd/main/Caddyfile
 curl -fsSL https://raw.githubusercontent.com/dyllislev/hostherd/main/.env.example -o .env
 # .env에서 PUBLIC_URL을 HTTPS 주소로 지정
 docker compose up -d
-docker compose logs hostherd | grep "setup token"
+docker compose exec hostherd cat /data/setup-token
 ```
 
 브라우저에서 `PUBLIC_URL`을 열어 초기 설정 코드로 관리자 계정을 만듭니다. 그다음 **서버 → 서버 등록**에서 서버를 등록하고, 발급된 설치 명령을 그 서버에서 실행합니다.
+
+Claude Code, Codex 같은 AI 코딩 에이전트에게 설치를 맡기려면 [AI 코딩 에이전트로 설치](docs/ko/install.md#ai-코딩-에이전트로-설치)의 프롬프트를 씁니다.
 
 AI 클라이언트가 쓰는 MCP 주소는 `<PUBLIC_URL>/mcp`입니다. 클라이언트별 설정 방법은 **설정 → MCP 연결**에 있습니다.
 

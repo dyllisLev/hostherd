@@ -33,6 +33,13 @@ func TestReadRecordRejectsLinksAndFIFOs(t *testing.T) {
 	if _, err := ReadRecord(root, id); err == nil {
 		t.Fatal("read a FIFO")
 	}
+	os.Remove(meta)
+	if err := os.Link(secret, meta); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadRecord(root, id); err == nil {
+		t.Fatal("followed a meta.json hard link")
+	}
 	os.RemoveAll(JobDir(root, id))
 	if err := os.Symlink(filepath.Dir(secret), JobDir(root, id)); err != nil {
 		t.Fatal(err)

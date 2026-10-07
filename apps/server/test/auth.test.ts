@@ -7,7 +7,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import Database from 'better-sqlite3';
 import express from 'express';
-import { createAuth } from '../src/auth.js';
+import { createAuth, loginKey } from '../src/auth.js';
 
 class Browser {
   cookies = new Map<string, string>();
@@ -51,6 +51,7 @@ async function fixture() {
   async function start(port = 0) {
     db = new Database(path.join(dir, 'test.sqlite'));
     const app = express();
+    app.set('trust proxy', 'loopback');
     // Fixtures deliberately replace the listening server; avoid reusing a stale client socket.
     app.use((_req, res, next) => { res.set('Connection', 'close'); next(); });
     server = createServer(app);
@@ -230,6 +231,41 @@ test('real OAuth DCR + PKCE authorization, refresh across restart, and grant/tok
   assert.equal((await tokenRequest({ grant_type: 'refresh_token', refresh_token: last.refresh_token, resource })).status, 400);
 });
 
+test('login limit groups IPv6 clients by /64 network', () => {
+  const key = (ip: string) => loginKey({ ip, socket: {} as never });
+  assert.equal(key('203.0.113.7'), '203.0.113.7');
+  assert.equal(key('::ffff:203.0.113.7'), '::ffff:203.0.113.7');
+  assert.equal(key('2001:db8:1:2::1'), '2001:db8:1:2::/64');
+  assert.equal(key('2001:0db8:0001:0002:aaaa:bbbb:cccc:dddd'), '2001:db8:1:2::/64');
+  assert.equal(key('2001:db8::5%eth0'), '2001:db8:0:0::/64');
+  assert.notEqual(key('2001:db8:1:3::1'), key('2001:db8:1:2::1'));
+});
+
+test('dynamic client registration is rate limited per address', async (t) => {
+  const f = await fixture(); t.after(f.close);
+  const discovery = await (await fetch(`${f.base}/oauth/.well-known/openid-configuration`)).json();
+  const register = (address: string) => fetch(discovery.registration_endpoint, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': address },
+    body: JSON.stringify({ client_name: 'Flood', application_type: 'native', redirect_uris: ['http://127.0.0.1:9876/callback'], token_endpoint_auth_method: 'none' }),
+  });
+  for (let n = 0; n < 20; n++) assert.equal((await register('198.51.100.1')).status, 201);
+  const limited = await register('198.51.100.1');
+  assert.equal(limited.status, 429);
+  assert.equal((await limited.json()).code, 'REGISTRATION_RATE_LIMITED');
+  assert.equal((await register('198.51.100.2')).status, 201, 'other addresses are not affected');
+});
+
+test('wrong logins from many addresses share an overall limit', async (t) => {
+  const f = await fixture(); t.after(f.close);
+  await f.setup();
+  for (let n = 0; n < 10; n++) {
+    const results = await Promise.all(Array.from({ length: 10 }, () => f.browser.json('/api/login', 'POST', { username: 'owner', password: 'wrong' }, { 'X-Forwarded-For': `198.51.100.${n}` })));
+    assert.ok(results.every(response => response.status === 401));
+  }
+  const blocked = await f.browser.json('/api/login', 'POST', { username: 'owner', password: 'correct-password' }, { 'X-Forwarded-For': '198.51.100.200' });
+  assert.equal(blocked.status, 429);
+});
+
 test('concurrent wrong logins cannot exceed the attempt limit', async (t) => {
   const f = await fixture(); t.after(f.close);
   await f.setup();
@@ -238,16 +274,18 @@ test('concurrent wrong logins cannot exceed the attempt limit', async (t) => {
   assert.equal(results.filter(response => response.status === 429).length, 4);
 });
 
-test('setup token is logged at startup only while no administrator exists', async (t) => {
+test('setup token location is logged while no administrator exists, never the token', async (t) => {
   const logged: string[] = [];
   t.mock.method(console, 'log', (...args: unknown[]) => { logged.push(args.join(' ')); });
   const f = await fixture(); t.after(f.close);
   const tokenPath = path.join(f.dir, 'setup-token');
   const token = (await readFile(tokenPath, 'utf8')).trim();
   assert.deepEqual(logged.filter(line => line.startsWith('Hostherd setup token')),
-    [`Hostherd setup token: ${token} (also saved to ${tokenPath}; it is removed after the first administrator is created)`]);
+    [`Hostherd setup token saved to ${tokenPath}; it is removed after the first administrator is created`]);
   await f.restart();
-  assert.equal(logged.filter(line => line.includes(token)).length, 2, 'the same token is logged again after a restart');
+  assert.equal(logged.filter(line => line.startsWith('Hostherd setup token')).length, 2);
+  assert.equal(logged.filter(line => line.includes(token)).length, 0, 'the token itself is never logged');
+  assert.equal((await readFile(tokenPath, 'utf8')).trim(), token, 'a restart keeps the same token');
   await f.setup();
   await f.restart();
   assert.equal(logged.filter(line => line.startsWith('Hostherd setup token')).length, 2);

@@ -29,7 +29,11 @@ const secretWords = '(?:authorization|cookie|password|passwd|passphrase|token|se
 const secretKey = new RegExp(secretWords, 'i');
 const payloadKey = /^(data|text|oldText|newText|output|content|body)$/i;
 
-/** Redact before persistence, including secrets embedded in commands and error messages. */
+/**
+ * Redact before persistence, including secrets embedded in commands and error messages.
+ * Secret-name patterns start only where a [\w-] run begins; starting at every
+ * word boundary made long inputs such as "a-a-a-…" take quadratic time.
+ */
 export function redactText(text: string): string {
   return text
     .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/g, '[REDACTED PRIVATE KEY]')
@@ -49,10 +53,10 @@ export function redactText(text: string): string {
         return url.toString();
       } catch { return '[REDACTED URL]'; }
     })
-    .replace(new RegExp(String.raw`\b([\w-]*${secretWords}[\w-]*\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s;]+)`, 'gi'), '$1[REDACTED]')
-    .replace(new RegExp(String.raw`(--[\w-]*${secretWords}[\w-]*\s+)(?:"[^"]*"|'[^']*'|[^\s;]+)`, 'gi'), '$1[REDACTED]')
+    .replace(new RegExp(String.raw`(?<![\w-])([\w-]*${secretWords}[\w-]*\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s;]+)`, 'gi'), '$1[REDACTED]')
+    .replace(new RegExp(String.raw`((?<![\w-])--[\w-]*${secretWords}[\w-]*\s+)(?:"[^"]*"|'[^']*'|[^\s;]+)`, 'gi'), '$1[REDACTED]')
     .replace(new RegExp(String.raw`(["'][\w-]*${secretWords}[\w-]*["']\s*:\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)`, 'gi'), '$1"[REDACTED]"')
-    .replace(new RegExp(String.raw`(\b[\w-]*${secretWords}[\w-]*\s*:\s*)(?:"[^"]*"|'[^']*'|[^\r\n"']+)`, 'gi'), '$1[REDACTED]')
+    .replace(new RegExp(String.raw`((?<![\w-])[\w-]*${secretWords}[\w-]*\s*:\s*)(?:"[^"]*"|'[^']*'|[^\r\n"']+)`, 'gi'), '$1[REDACTED]')
     .replace(/((?:^|\s)(?:-u|-b|--user)\s+)(?:"[^"]*"|'[^']*'|[^\s;]+)/g, '$1[REDACTED]');
 }
 

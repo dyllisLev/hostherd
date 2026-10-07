@@ -45,3 +45,7 @@ func ReplaceFile(tmp, path string) error {
 
 // SyncDir is a no-op: NTFS journals the rename and directories cannot be flushed.
 func SyncDir(string) error { return nil }
+
+// Hard links are no privilege boundary on Windows: the execution account is an
+// administrator or SYSTEM.
+func singleLink(os.FileInfo) bool { return true }

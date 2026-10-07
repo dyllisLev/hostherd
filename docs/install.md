@@ -68,13 +68,13 @@ docker compose up -d
 docker compose ps        # STATUS should become "healthy"
 ```
 
-On the first start Hostherd prints a one-time setup token:
+On the first start Hostherd creates a one-time setup token in the data volume. Read it with:
 
 ```sh
-docker compose logs hostherd | grep "setup token"
+docker compose exec hostherd cat /data/setup-token
 ```
 
-The token is also stored in the data volume as `setup-token` and is deleted once the admin account exists.
+The token is not written to the log. The file is deleted once the admin account exists.
 
 ## 4. HTTPS
 
@@ -195,5 +195,65 @@ The MCP address is `<PUBLIC_URL>/mcp`, for example `https://hostherd.example.com
 - **Cursor, VS Code and other clients**: use OAuth if the client supports it. Otherwise issue a token in **Settings → Personal tokens** and send it as `Authorization: Bearer <token>`.
 
 A connected client can reach every registered server. Approved OAuth apps and tokens can be revoked in **Settings** at any time.
+
+## Installing with an AI coding agent
+
+If you use an AI coding agent that runs shell commands, such as Claude Code, Codex or Gemini CLI, it can do steps 1 to 4 for you. Start it on the host that will run Hostherd, fill in the values in angle brackets and paste this prompt:
+
+```text
+Install the Hostherd central server on this host with Docker Compose.
+Follow the official guide and treat it as the source of truth:
+https://raw.githubusercontent.com/dyllislev/hostherd/main/docs/install.md
+
+Settings:
+- PUBLIC_URL: https://<hostherd.example.com>
+- HTTPS: <bundled Caddy | my own reverse proxy: name and how it runs>
+- Install directory: /opt/hostherd
+
+Steps:
+1. Check that Docker Engine and the Compose plugin work (`docker compose version`).
+   If they are missing, tell me how to install them for this OS and wait for me.
+2. Check that the host in PUBLIC_URL resolves to this host's public address.
+   With bundled Caddy, also check that ports 80 and 443 are free.
+3. Download compose.yaml, Caddyfile and .env.example into the install directory
+   as the guide shows and copy .env.example to .env. Set PUBLIC_URL, and set
+   COMPOSE_PROFILES= (empty) if I use my own reverse proxy. Leave everything
+   else at the defaults.
+4. Run `docker compose up -d` and wait until `docker compose ps` shows hostherd
+   as healthy.
+5. If I use my own reverse proxy, show me the guide's configuration adapted to
+   it, including WebSockets and the Authorization header. Do not change the
+   proxy until I approve.
+6. Check `curl -fsS <PUBLIC_URL>/healthz`.
+7. Show me the one-time setup token: `docker compose exec hostherd cat /data/setup-token`.
+
+Rules:
+- Do not stop, remove or restart other containers, volumes or networks, and do
+  not run docker prune.
+- Keep the Hostherd port on 127.0.0.1; do not expose port 3000 publicly.
+- Do not create the admin account. I will do that in the browser.
+- If a step fails, show me the command, its output and the relevant logs, and
+  stop instead of working around it.
+```
+
+Then continue with [step 5](#5-create-the-admin-account) in the browser.
+
+To add a server through an agent on the target server, get the install command from **Servers → Add server** and paste:
+
+```text
+Install the Hostherd agent on this server by running this command exactly as
+given, as the current user (do not switch to root yourself):
+<install command from Hostherd>
+
+On macOS, run `brew install openssl@3` first if it is not installed.
+
+If sudo asks for a password, stop and ask me to run the command myself.
+Do not change the command, and if the signature or checksum check fails, report
+the error instead of working around it. Afterwards show me the agent service
+status and its last 20 log lines (Linux: hostherd-agent with systemctl and
+journalctl; macOS: launchctl print system/io.hostherd.agent).
+```
+
+On Windows the command must run in an Administrator PowerShell, so it is usually simpler to run it yourself.
 
 Next: [Operations](operations.md).

@@ -119,8 +119,41 @@ func secureDataDir(ctx context.Context) error {
 	if err := os.MkdirAll(config.DataDir, 0700); err != nil {
 		return err
 	}
-	_, err := run(ctx, system32("icacls.exe"), config.DataDir, "/inheritance:r", "/grant:r", "*"+windowsSystemSID+":(OI)(CI)F", "*"+adminsSID+":(OI)(CI)F")
+	// Elevated administrators may own what they create; hand it to Administrators.
+	current, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return err
+	}
+	if err := requireTrustedOwner(config.DataDir, current.User.Sid.String()); err != nil {
+		return err
+	}
+	if _, err := run(ctx, system32("icacls.exe"), config.DataDir, "/setowner", "*"+adminsSID); err != nil {
+		return err
+	}
+	_, err = run(ctx, system32("icacls.exe"), config.DataDir, "/inheritance:r", "/grant:r", "*"+windowsSystemSID+":(OI)(CI)F", "*"+adminsSID+":(OI)(CI)F")
 	return err
+}
+
+// requireTrustedOwner rejects a directory owned by anyone but SYSTEM,
+// Administrators or one of the given accounts. Regular users may create folders
+// in ProgramData; one created in advance keeps its owner and explicit ACEs,
+// which icacls /inheritance:r does not remove, so that user could later rewrite
+// the agent configuration that SYSTEM trusts.
+func requireTrustedOwner(path string, trusted ...string) error {
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return fmt.Errorf("read owner of %s: %w", path, err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		return fmt.Errorf("read owner of %s: %w", path, err)
+	}
+	for _, sid := range append([]string{windowsSystemSID, adminsSID}, trusted...) {
+		if strings.EqualFold(owner.String(), sid) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s is owned by %s, not by SYSTEM or Administrators; delete it as an administrator and install again", path, owner.String())
 }
 
 // provisionRuntime lets the execution account create jobs and its runner socket.
@@ -728,6 +761,10 @@ func Update(ctx context.Context, configPath, manifestURL string) error {
 	}
 	sid, err := accountSID(c.ExecutionUser)
 	if err != nil {
+		return err
+	}
+	// Installs before the owner check may be owned by the installing account.
+	if err = requireTrustedOwner(config.DataDir, sid); err != nil {
 		return err
 	}
 	client := httpClient()

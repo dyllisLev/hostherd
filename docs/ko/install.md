@@ -68,13 +68,13 @@ docker compose up -d
 docker compose ps        # STATUS가 "healthy"가 되어야 합니다
 ```
 
-처음 시작할 때 Hostherd가 한 번만 쓰는 초기 설정 코드를 출력합니다.
+처음 시작할 때 Hostherd가 한 번만 쓰는 초기 설정 코드를 데이터 볼륨에 만듭니다. 다음 명령으로 읽습니다.
 
 ```sh
-docker compose logs hostherd | grep "setup token"
+docker compose exec hostherd cat /data/setup-token
 ```
 
-이 코드는 데이터 볼륨의 `setup-token` 파일에도 저장되며, 관리자 계정을 만들면 삭제됩니다.
+이 코드는 로그에 남지 않습니다. 관리자 계정을 만들면 파일이 삭제됩니다.
 
 ## 4. HTTPS
 
@@ -195,5 +195,62 @@ MCP 주소는 `<PUBLIC_URL>/mcp`입니다. 예: `https://hostherd.example.com/mc
 - **Cursor, VS Code 등**: 클라이언트가 지원하면 OAuth를 씁니다. 지원하지 않으면 **설정 → 개인 토큰**에서 토큰을 발급해 `Authorization: Bearer <token>`으로 보냅니다.
 
 연결된 클라이언트는 등록된 모든 서버에 접근할 수 있습니다. 승인한 OAuth 앱과 토큰은 **설정**에서 언제든 폐기할 수 있습니다.
+
+## AI 코딩 에이전트로 설치
+
+Claude Code, Codex, Gemini CLI처럼 셸 명령을 실행하는 AI 코딩 에이전트를 쓴다면 1~4단계를 맡길 수 있습니다. Hostherd를 실행할 호스트에서 에이전트를 시작하고, 꺾쇠괄호 안의 값을 채워 아래 프롬프트를 붙여 넣습니다.
+
+```text
+이 호스트에 Docker Compose로 Hostherd 중앙 서버를 설치해 줘.
+공식 설치 문서를 따르고, 이 문서를 기준으로 삼아:
+https://raw.githubusercontent.com/dyllislev/hostherd/main/docs/ko/install.md
+
+설정:
+- PUBLIC_URL: https://<hostherd.example.com>
+- HTTPS: <함께 들어 있는 Caddy | 직접 운영하는 리버스 프록시: 종류와 실행 방식>
+- 설치 디렉터리: /opt/hostherd
+
+순서:
+1. Docker Engine과 Compose 플러그인이 동작하는지 확인해(`docker compose version`).
+   없으면 이 OS에 맞는 설치 방법을 알려 주고 내 답을 기다려.
+2. PUBLIC_URL의 호스트 이름이 이 호스트의 공인 주소를 가리키는지 확인해.
+   함께 들어 있는 Caddy를 쓰면 80, 443 포트가 비어 있는지도 확인해.
+3. 문서대로 compose.yaml, Caddyfile, .env.example을 설치 디렉터리에 받고
+   .env.example을 .env로 복사해. PUBLIC_URL을 지정하고, 직접 운영하는
+   리버스 프록시를 쓰면 COMPOSE_PROFILES= 로 비워. 나머지는 기본값으로 둬.
+4. `docker compose up -d`를 실행하고 `docker compose ps`에서 hostherd가
+   healthy가 될 때까지 기다려.
+5. 직접 운영하는 리버스 프록시를 쓰면 문서의 설정을 그 프록시에 맞게 바꿔서
+   보여 줘(WebSocket과 Authorization 헤더 포함). 내가 승인하기 전에는
+   프록시를 바꾸지 마.
+6. `curl -fsS <PUBLIC_URL>/healthz`로 확인해.
+7. `docker compose exec hostherd cat /data/setup-token`으로 일회용 초기 설정 코드를 읽어 보여 줘.
+
+규칙:
+- 다른 컨테이너, 볼륨, 네트워크를 멈추거나 지우거나 재시작하지 말고
+  docker prune도 실행하지 마.
+- Hostherd 포트는 127.0.0.1에 두고 3000 포트를 외부에 열지 마.
+- 관리자 계정은 만들지 마. 내가 브라우저에서 만들게.
+- 어느 단계든 실패하면 우회하지 말고 명령, 출력, 관련 로그를 보여 주고 멈춰.
+```
+
+그다음 브라우저에서 [5단계](#5-관리자-계정-만들기)를 이어 갑니다.
+
+대상 서버에서 에이전트에게 서버 추가를 맡기려면 **서버 → 서버 등록**에서 설치 명령을 발급받아 아래 프롬프트와 함께 붙여 넣습니다.
+
+```text
+이 서버에 Hostherd 에이전트를 설치해 줘. 아래 명령을 바꾸지 말고 현재 사용자로
+그대로 실행해(직접 root로 전환하지 마):
+<Hostherd에서 발급한 설치 명령>
+
+macOS에서는 openssl@3이 없으면 먼저 `brew install openssl@3`을 실행해.
+
+sudo가 비밀번호를 물으면 멈추고 나에게 직접 실행하라고 알려 줘.
+명령을 수정하지 말고, 서명이나 체크섬 확인이 실패하면 우회하지 말고 오류를
+알려 줘. 끝나면 에이전트 서비스 상태와 마지막 로그 20줄을 보여 줘
+(Linux: systemctl과 journalctl로 hostherd-agent, macOS: launchctl print system/io.hostherd.agent).
+```
+
+Windows는 관리자 권한 PowerShell에서 실행해야 하므로 보통 직접 실행하는 편이 간단합니다.
 
 다음: [운영](operations.md)

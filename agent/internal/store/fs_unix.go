@@ -24,6 +24,11 @@ func Lock(path string, nonblocking bool) (*os.File, error) {
 }
 func Unlock(f *os.File) { syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }
 
+func singleLink(info os.FileInfo) bool {
+	s, ok := info.Sys().(*syscall.Stat_t)
+	return ok && s.Nlink == 1
+}
+
 // ReplaceFile atomically renames tmp over path.
 func ReplaceFile(tmp, path string) error { return os.Rename(tmp, path) }
 

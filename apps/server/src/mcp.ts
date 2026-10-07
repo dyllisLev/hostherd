@@ -298,7 +298,8 @@ export function mountMcp(app: Express, hub: AgentHub, authenticate: Authenticato
   } }, { onerror: error => logs?.failure('http', error) });
   app.all('/mcp', async (req, res, next) => {
     try {
-      logs?.request(req.body);
+      // Record the body only after authentication: unauthenticated callers must
+      // not reach the redaction pass or fill the request log with payloads.
       logs?.event('auth', 'start');
       const token = /^Bearer (\S+)$/i.exec(req.headers.authorization ?? '')?.[1];
       const auth = token ? await authenticate(token) : null;
@@ -309,6 +310,7 @@ export function mountMcp(app: Express, hub: AgentHub, authenticate: Authenticato
       }
       logs?.update({ clientId: redactText(auth.clientId), subject: redactText(auth.subject) });
       logs?.event('auth', 'success');
+      logs?.request(req.body);
       logs?.event('sdk', 'start');
       const authenticated = req as Request & { auth: { token: string; clientId: string; scopes: string[] } };
       authenticated.auth = { token: token!, clientId: auth.clientId, scopes: auth.scopes };

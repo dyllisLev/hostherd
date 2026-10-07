@@ -64,6 +64,16 @@ type Admin = { username: string; password_hash: string };
 type Session = { username: string; expires_at: number };
 type TokenIdentity = { subject: string; clientId: string; scopes: string[] };
 
+/** Rate-limit key: the client address, with IPv6 clients grouped by their /64 network. */
+export function loginKey(req: Pick<Request, 'ip' | 'socket'>): string {
+  const ip = (req.ip ?? req.socket.remoteAddress ?? 'unknown').replace(/%.*$/, '');
+  if (!ip.includes(':') || /^::ffff:\d/i.test(ip)) return ip;
+  const [head, tail] = ip.split('::');
+  const left = head ? head.split(':') : [], right = tail ? tail.split(':') : [];
+  const groups = tail === undefined ? left : [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill('0'), ...right];
+  return groups.slice(0, 4).map(group => parseInt(group, 16).toString(16)).join(':') + '::/64';
+}
+
 export async function createAuth({ db, app, publicUrl, dataDir }: {
   db: Database.Database; app: express.Express; publicUrl: string; dataDir: string;
 }): Promise<{
@@ -111,8 +121,8 @@ export async function createAuth({ db, app, publicUrl, dataDir }: {
       await writeFile(setupPath, `${setupToken}\n`, { mode: 0o600 });
     }
     await chmod(setupPath, 0o600);
-    // Container installs read it from the log; the file stays for shell access.
-    console.log(`Hostherd setup token: ${setupToken} (also saved to ${setupPath}; it is removed after the first administrator is created)`);
+    // Point at the file only: logs are often collected elsewhere, and the token grants the admin account.
+    console.log(`Hostherd setup token saved to ${setupPath}; it is removed after the first administrator is created`);
   }
 
   function session(req: IncomingMessage): Session | undefined {
@@ -139,14 +149,16 @@ export async function createAuth({ db, app, publicUrl, dataDir }: {
     protectWrite(req, res, next);
   };
   const failures = new Map<string, { count: number; until: number }>();
+  // Failed logins from all addresses together, so rotating addresses cannot
+  // multiply the per-address limit without bound.
+  let allFailures = { count: 0, until: 0 };
   const loginAllowed = (req: Request) => {
-    const key = req.ip ?? req.socket.remoteAddress ?? 'unknown';
-    const current = failures.get(key);
+    const current = failures.get(loginKey(req));
     if (current && current.until > Date.now() && current.count >= 10) return false;
-    return true;
+    return !(allFailures.until > Date.now() && allFailures.count >= 100);
   };
   async function checkLogin(req: Request, username: unknown, password: unknown): Promise<boolean> {
-    const key = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+    const key = loginKey(req);
     // Count the attempt before hashing, so concurrent requests cannot pass the limit together.
     const previous = failures.get(key);
     const active = previous && previous.until > Date.now();
@@ -158,6 +170,7 @@ export async function createAuth({ db, app, publicUrl, dataDir }: {
       valid = equal(username, account.username) && equal(computed, account.password_hash);
     }
     if (valid) failures.delete(key);
+    else allFailures = allFailures.until > Date.now() ? { ...allFailures, count: allFailures.count + 1 } : { count: 1, until: Date.now() + 5 * 60_000 };
     return valid;
   }
 
@@ -340,6 +353,15 @@ export async function createAuth({ db, app, publicUrl, dataDir }: {
     await provider.interactionFinished(req, res, { consent: { grantId: await grant.save() } }, { mergeWithLastSubmission: true });
   });
   app.use('/oauth/interaction', interaction);
+  // Client registration needs no login; limit how many clients one address can add.
+  const registrations = new Map<string, { count: number; until: number }>();
+  app.post('/oauth/reg', (req, res, next) => {
+    const key = loginKey(req), current = registrations.get(key);
+    const active = current && current.until > Date.now();
+    if (active && current.count >= 20) { fail(res, 429, 'REGISTRATION_RATE_LIMITED', 'Too many client registrations. Try again later.'); return; }
+    registrations.set(key, { count: active ? current.count + 1 : 1, until: active ? current.until : Date.now() + 60 * 60_000 });
+    next();
+  });
   // Mount before any application-wide JSON/urlencoded parsers: provider parses OAuth request bodies itself.
   app.use('/oauth', provider.callback());
 
@@ -347,6 +369,7 @@ export async function createAuth({ db, app, publicUrl, dataDir }: {
     db.prepare('DELETE FROM auth_sessions WHERE expires_at<=?').run(Date.now());
     db.prepare('DELETE FROM auth_oauth WHERE expires_at IS NOT NULL AND expires_at<=?').run(Math.floor(Date.now() / 1000));
     for (const [key, entry] of failures) if (entry.until <= Date.now()) failures.delete(key);
+    for (const [key, entry] of registrations) if (entry.until <= Date.now()) registrations.delete(key);
   }, 60_000);
   cleanup.unref();
 

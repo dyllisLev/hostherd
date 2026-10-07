@@ -26,10 +26,12 @@ curl -fsSLO https://raw.githubusercontent.com/dyllislev/hostherd/main/Caddyfile
 curl -fsSL https://raw.githubusercontent.com/dyllislev/hostherd/main/.env.example -o .env
 # Edit .env: set PUBLIC_URL to your HTTPS address
 docker compose up -d
-docker compose logs hostherd | grep "setup token"
+docker compose exec hostherd cat /data/setup-token
 ```
 
 Open `PUBLIC_URL` in a browser and create the admin account with the setup token. Then register a server in **Servers → Add server** and run the install command it gives you on that server.
+
+To let an AI coding agent such as Claude Code or Codex do the installation, use the prompt in [Installing with an AI coding agent](docs/install.md#installing-with-an-ai-coding-agent).
 
 The MCP address for AI clients is `<PUBLIC_URL>/mcp`. **Settings → MCP** shows the setup for each client.
 
