@@ -1,0 +1,158 @@
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { createServer } from 'node:net';
+import path from 'node:path';
+import { chromium, expect, type Browser } from '@playwright/test';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { WebSocket } from 'ws';
+import { createApp } from '../apps/server/src/app.js';
+
+// Run after `npm run build`: npx tsx scripts/request-logs-web.test.ts
+const check = expect.configure({ timeout: 10_000 });
+const fixture = await mkdtemp(path.join(tmpdir(), 'hostherd-request-logs-web-'));
+const artifacts = path.resolve('artifacts');
+await mkdir(artifacts, { recursive: true });
+const port = await new Promise<number>(resolve => {
+  const reservation = createServer();
+  reservation.listen(0, '127.0.0.1', () => {
+    const assigned = (reservation.address() as { port: number }).port;
+    reservation.close(() => resolve(assigned));
+  });
+});
+const base = `http://127.0.0.1:${port}`;
+const app = await createApp({ dataDir: fixture, publicUrl: base });
+const errors: string[] = [];
+let browser: Browser | undefined;
+let client: Client | undefined;
+let passed = false;
+try {
+  await new Promise<void>(resolve => app.server.listen(port, '127.0.0.1', resolve));
+  const setupToken = (await readFile(path.join(fixture, 'setup-token'), 'utf8')).trim();
+  const setup = await fetch(base + '/api/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'trace-web', password: 'local-trace-web-password', setupToken }) });
+  assert.equal(setup.status, 201);
+  const cookie = setup.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
+  const tokenResponse = await fetch(base + '/api/tokens', { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'trace browser fixture' }) });
+  const pat = await tokenResponse.json() as { token: string };
+  const { code } = app.store.enrollment('로그 검사 서버', 'root');
+  const credentials = app.store.enroll(code, { hostname: 'trace-web-fixture', os: 'linux', arch: 'amd64', version: '1.0.0' });
+  const ws = new WebSocket(base.replace('http:', 'ws:') + '/agent', { headers: { Authorization: 'Bearer ' + credentials.token } });
+  const output = 'TRACE_WEB_SAVED_OUTPUT\n';
+  ws.on('message', raw => {
+    const message = JSON.parse(raw.toString());
+    if (message.type !== 'request') return;
+    if (message.method === 'job.start') {
+      const state = { id: message.params.id, kind: 'job', path: message.params.path, cmd: message.params.cmd, status: 'completed', startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), exitCode: 0 };
+      ws.send(JSON.stringify({ type: 'state', job: state }));
+      ws.send(JSON.stringify({ type: 'output', jobId: state.id, offset: 0, data: Buffer.from(output).toString('base64') }));
+      ws.send(JSON.stringify({ type: 'response', id: message.id, result: state }));
+    } else ws.send(JSON.stringify({ type: 'response', id: message.id, error: { code: 'EACCES', message: 'Permission denied: /trace-web-denied.txt' } }));
+  });
+  await once(ws, 'open');
+  ws.send(JSON.stringify({ type: 'hello', protocol: 1, hostname: 'trace-web-fixture', os: 'linux', arch: 'amd64', version: '1.0.0', user: 'root' }));
+  await check.poll(() => app.hub.online(credentials.serverId)).toBe(true);
+  client = new Client({ name: 'request-logs-web', version: '1.0.0' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(base + '/mcp'), { requestInit: { headers: { Authorization: 'Bearer ' + pat.token } } }));
+  for (let i = 0; i < 53; i++) await client.callTool({ name: 'servers_list', arguments: {} });
+  const command = 'printf TRACE_WEB_COMMAND';
+  const jobResult = await client.callTool({ name: 'job_start', arguments: { serverId: credentials.serverId, path: '/tmp', cmd: command, waitMs: 0 } });
+  const jobId = JSON.parse((jobResult.content as { text: string }[])[0].text).jobId as string;
+  const traceId = jobResult._meta?.['hostherd/traceId'] as string;
+  assert.ok(traceId);
+  const failed = await client.callTool({ name: 'file_read', arguments: { serverId: credentials.serverId, path: '/trace-web-denied.txt' } });
+  const errorTraceId = failed._meta?.['hostherd/traceId'] as string;
+  assert.equal(failed.isError, true);
+
+  browser = await chromium.launch({ executablePath: process.env.CHROME_BINARY ?? '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: 'ko-KR' });
+  const page = await context.newPage();
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto(base + '/#request-logs/' + traceId);
+  await check(page.getByRole('heading', { name: '로그인', exact: true })).toBeVisible();
+  const unauthorized = await context.request.get(base + '/api/request-logs');
+  assert.equal(unauthorized.status(), 401);
+  assert.equal((await context.request.get(base + '/api/request-logs/' + traceId)).status(), 401);
+  await page.getByLabel('사용자 이름', { exact: true }).fill('trace-web');
+  await page.getByLabel('비밀번호', { exact: true }).fill('local-trace-web-password');
+  await page.getByRole('button', { name: '로그인', exact: true }).click();
+  await check(page.getByRole('navigation', { name: '주 메뉴' })).toBeVisible();
+  await page.getByRole('navigation', { name: '주 메뉴' }).getByRole('link', { name: '요청 로그', exact: true }).click();
+  await check(page.getByRole('heading', { name: '요청 로그', exact: true })).toBeVisible();
+  await check(page.getByText('수집 정상', { exact: true })).toBeVisible();
+  await check(page.getByText('수집 시작', { exact: false })).toBeVisible();
+  await check(page.getByText('기록이 없다는 사실만으로 안전 차단 여부를 판단할 수 없습니다.', { exact: false })).toBeVisible();
+  await check(page.locator('tbody tr')).toHaveCount(50);
+  const live = await client.callTool({ name: 'servers_list', arguments: {} });
+  const liveTraceId = live._meta?.['hostherd/traceId'] as string;
+  await check(page.getByRole('link', { name: liveTraceId + ' 요청 상세 보기' })).toBeVisible();
+  const firstPageIds = await page.locator('tbody a[aria-label]').evaluateAll(links => links.map(link => link.getAttribute('href')));
+  await page.getByRole('button', { name: '다음 페이지', exact: true }).click();
+  await check(page.getByText(/2 페이지 ·/)).toBeVisible();
+  await check(page.getByRole('button', { name: '이전 페이지', exact: true })).toBeEnabled();
+  const secondPageIds = await page.locator('tbody a[aria-label]').evaluateAll(links => links.map(link => link.getAttribute('href')));
+  assert.ok(secondPageIds.length > 0);
+  assert.ok(secondPageIds.every(id => !firstPageIds.includes(id)), 'cursor pages do not repeat requests');
+  await page.getByRole('button', { name: '이전 페이지', exact: true }).click();
+  await check(page.getByText(/1 페이지 · 50건/)).toBeVisible();
+
+  await page.getByLabel('서버', { exact: true }).selectOption(credentials.serverId);
+  await page.getByLabel('결과', { exact: true }).selectOption('error');
+  await page.getByLabel('도구', { exact: true }).selectOption('file_read');
+  await page.getByLabel('검색', { exact: true }).fill('EACCES');
+  await check(page.locator('tbody tr')).toHaveCount(1);
+  await check(page.locator('tbody')).toContainText('도구 오류');
+  await check(page.locator('tbody')).toContainText('200');
+  await page.getByRole('link', { name: errorTraceId + ' 요청 상세 보기' }).click();
+  await check(page.getByRole('heading', { level: 1 })).toContainText('file_read');
+  await page.getByText('기술 정보', { exact: true }).click();
+  await check(page.locator('dt').filter({ hasText: /^HTTP 상태$/ }).locator('..')).toContainText('200');
+  await check(page.locator('dt').filter({ hasText: /^MCP isError$/ }).locator('..')).toContainText('true');
+  await check(page.getByText('처리 단계', { exact: true })).toBeVisible();
+  await page.locator('main').getByRole('link', { name: '요청 로그', exact: true }).click();
+
+  await page.getByLabel('검색', { exact: true }).fill('TRACE_WEB_COMMAND');
+  await check(page.locator('tbody tr')).toHaveCount(1);
+  await check(page.locator('tbody')).toContainText(command);
+  await page.getByRole('link', { name: traceId + ' 요청 상세 보기' }).click();
+  await check(page.getByRole('heading', { level: 1 })).toContainText('job_start');
+  await check(page.getByText('요청 인자', { exact: true })).toBeVisible();
+  await check(page.getByText('응답 요약', { exact: true })).toBeVisible();
+  await check(page.getByRole('link', { name: '작업 출력 보기' })).toHaveAttribute('href', '/jobs/' + jobId);
+  assert.ok(!(await page.locator('main').innerText()).includes(output.trim()), 'request details link saved output instead of repeating its contents');
+  await page.screenshot({ path: path.join(artifacts, 'request-logs-detail-desktop.png'), fullPage: true });
+  await page.getByRole('link', { name: '작업 출력 보기' }).click();
+  await check(page.getByRole('heading', { level: 1 })).toContainText(command);
+  await check(page.getByText(output.trim(), { exact: false })).toBeVisible();
+
+  await page.goto(base + '/#request-logs');
+  await check(page.getByRole('heading', { name: '요청 로그', exact: true })).toBeVisible();
+  await page.getByRole('radio', { name: '직접 지정', exact: true }).click();
+  await page.getByLabel('조회 시작', { exact: true }).fill('2000-01-01T00:00');
+  await page.getByLabel('조회 종료', { exact: true }).fill('2000-01-02T00:00');
+  await check(page.getByText('조건에 맞는 요청이 없습니다', { exact: true })).toBeVisible();
+  await page.getByRole('radio', { name: '24시간', exact: true }).click();
+  await check(page.locator('tbody tr')).toHaveCount(50);
+  await page.screenshot({ path: path.join(artifacts, 'request-logs-list-desktop.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await check.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  await page.screenshot({ path: path.join(artifacts, 'request-logs-list-mobile.png'), fullPage: true });
+  await page.goto(base + '/#request-logs/' + traceId);
+  await check(page.getByRole('heading', { level: 1 })).toContainText('job_start');
+  await check(page.getByRole('link', { name: '작업 출력 보기' })).toBeVisible();
+  await check.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  await page.screenshot({ path: path.join(artifacts, 'request-logs-detail-mobile.png'), fullPage: true });
+  assert.deepEqual(errors, [], 'browser has no uncaught errors');
+  const report = { passed: true, checked: ['admin login and endpoint authorization', 'collection status and visibility limits', 'new requests appear through automatic polling', 'cursor pagination', 'server/tool/outcome/error search filters', 'HTTP 200 tool failure detail', 'command search and linked full output', 'date range and reset', 'desktop and mobile layouts'], screenshots: ['request-logs-list-desktop.png', 'request-logs-detail-desktop.png', 'request-logs-list-mobile.png', 'request-logs-detail-mobile.png'], pageErrors: errors };
+  await writeFile(path.join(artifacts, 'request-logs-web.json'), JSON.stringify(report, null, 2) + '\n');
+  console.log(JSON.stringify(report, null, 2));
+  passed = true;
+} catch (error) {
+  const page = browser?.contexts()[0]?.pages()[0];
+  await page?.screenshot({ path: path.join(artifacts, 'request-logs-web-failure.png'), fullPage: true });
+  console.error('Request log browser fixture retained at:', fixture);
+  throw error;
+} finally {
+  await browser?.close(); await client?.close(); await app.close();
+  if (passed) await rm(fixture, { recursive: true, force: true });
+}

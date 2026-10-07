@@ -1,0 +1,25 @@
+{
+  "name": "hostherd",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "license": "Elastic-2.0",
+  "workspaces": [
+    "apps/server",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @hostherd/server",
+    "build": "npm run build -w @hostherd/web && npm run build -w @hostherd/server",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm run test -w @hostherd/server && tsx --test scripts/output-text.test.ts scripts/xterm-ime.test.ts",
+    "test:integration": "tsx scripts/integration.ts",
+    "test:web": "tsx scripts/web-smoke.ts",
+    "test:ime-browser": "tsx scripts/xterm-ime-browser.test.ts",
+    "test:request-logs-web": "tsx scripts/request-logs-web.test.ts",
+    "test:oauth-browser": "tsx scripts/oauth-browser-check.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

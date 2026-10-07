@@ -1,0 +1,12 @@
+node_modules/
+dist/
+data/
+.env
+*.log
+agent/bin/
+artifacts/
+.local/
+playwright-report/
+test-results/
+releases/
+*.tsbuildinfo

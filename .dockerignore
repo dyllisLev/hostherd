@@ -1,0 +1,22 @@
+.git
+.worktrees
+node_modules
+**/node_modules
+**/data
+**/dist
+**/*.log
+**/.env
+**/.env.*
+.local
+artifacts
+docs
+.github
+deploy
+ops
+releases
+agent/bin
+test-results
+playwright-report
+# Some build systems write the signing key secret next to the Dockerfile.
+# Never send it as build context.
+AGENT_SIGNING_KEY_B64

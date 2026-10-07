@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
+    <meta name="theme-color" content="#fafafa" />
+    <meta name="description" content="Hostherd — manage commands, files and terminals on your servers over MCP and the web." />
+    <title>Hostherd</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script>
+      // Apply the saved language and theme before first paint (mirrors src/i18n and src/lib/preferences).
+      try {
+        var language = localStorage.getItem('hostherd.language');
+        if (language !== 'en' && language !== 'ko') language = /^ko/i.test((navigator.languages && navigator.languages[0]) || navigator.language || '') ? 'ko' : 'en';
+        document.documentElement.lang = language;
+      } catch (error) {}
+      try {
+        var theme = localStorage.getItem('hostherd.theme');
+        if (theme === 'dark' || (theme !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)) document.documentElement.classList.add('dark');
+      } catch (error) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

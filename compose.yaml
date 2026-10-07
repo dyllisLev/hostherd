@@ -1,0 +1,37 @@
+# Hostherd central server. Copy .env.example to .env, set PUBLIC_URL, then:
+#   docker compose up -d
+# Put an HTTPS reverse proxy in front of it (see docs/install.md).
+name: hostherd
+
+services:
+  hostherd:
+    image: ghcr.io/dyllislev/hostherd:${HOSTHERD_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      # The public HTTPS address of this server, as clients and agents reach it.
+      PUBLIC_URL: ${PUBLIC_URL:?Set PUBLIC_URL in .env}
+      # Proxy hops (or proxy addresses) to trust for the client IP. Default: 1.
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+    ports:
+      # Only the reverse proxy on this host should reach the container.
+      - "${HOSTHERD_BIND:-127.0.0.1}:${HOSTHERD_PORT:-3000}:3000"
+    volumes:
+      # Database, OAuth keys, tokens, job output and file transfers.
+      - data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # Lets the server close connections and finish writes on shutdown.
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  data:
+    name: hostherd-data

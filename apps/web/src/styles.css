@@ -1,0 +1,157 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--muted);
+  --color-secondary-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--foreground);
+  --color-destructive: var(--danger);
+  --color-border: var(--border);
+  --color-input: var(--border);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-success-border: var(--success-border);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-info-border: var(--info-border);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-border: var(--warning-border);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-border: var(--danger-border);
+  --color-series-1: var(--series-1);
+  --color-series-2: var(--series-2);
+  --font-sans: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", sans-serif;
+  --font-mono: "JetBrains Mono", "D2Coding", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+:root {
+  --background: #ffffff;
+  --foreground: #18181b;
+  --card: #ffffff;
+  --popover: #ffffff;
+  --primary: #18181b;
+  --primary-foreground: #fafafa;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --accent: #f4f4f5;
+  --border: #e4e4e7;
+  --ring: #a1a1aa;
+  --sidebar: #fafafa;
+  --sidebar-accent: #ededf0;
+  --success: #047857;
+  --success-soft: #ecfdf5;
+  --success-border: #a7f3d0;
+  --info: #1d4ed8;
+  --info-soft: #eff6ff;
+  --info-border: #bfdbfe;
+  --warning: #b45309;
+  --warning-soft: #fffbeb;
+  --warning-border: #fde68a;
+  --danger: #dc2626;
+  --danger-soft: #fef2f2;
+  --danger-border: #fecaca;
+  --chart-success: #10b981;
+  --chart-danger: #f43f5e;
+  --chart-warning: #f59e0b;
+  --chart-neutral: #a1a1aa;
+  --chart-grid: #e4e4e7;
+  --chart-axis: #71717a;
+  /* Categorical slots 1–3 of the validated reference palette (dataviz skill). */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  color-scheme: light;
+  font-family: var(--font-sans);
+  color: var(--foreground);
+  background: var(--sidebar);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:root.dark {
+  --background: #0f0f11;
+  --foreground: #ececee;
+  --card: #141417;
+  --popover: #18181b;
+  --primary: #fafafa;
+  --primary-foreground: #18181b;
+  --muted: #232327;
+  --muted-foreground: #9f9fa9;
+  --accent: #26262b;
+  --border: #2a2a30;
+  --ring: #52525b;
+  --sidebar: #09090b;
+  --sidebar-accent: #1f1f23;
+  --success: #34d399;
+  --success-soft: #0b2a21;
+  --success-border: #14532d;
+  --info: #60a5fa;
+  --info-soft: #0f1d36;
+  --info-border: #1e3a8a;
+  --warning: #fbbf24;
+  --warning-soft: #2a1f07;
+  --warning-border: #713f12;
+  --danger: #f87171;
+  --danger-soft: #2c1214;
+  --danger-border: #7f1d1d;
+  --chart-success: #34d399;
+  --chart-danger: #fb7185;
+  --chart-warning: #fbbf24;
+  --chart-neutral: #52525b;
+  --chart-grid: #2a2a30;
+  --chart-axis: #9f9fa9;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  color-scheme: dark;
+}
+
+@layer base {
+  * { @apply border-border; }
+  body { margin: 0; min-width: 320px; }
+  button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
+  button:not(:disabled), select:not(:disabled), [role="menuitem"], [role="tab"] { cursor: pointer; }
+  a:focus-visible { @apply rounded-sm outline-none ring-2 ring-ring ring-offset-2 ring-offset-background; }
+  ::selection { background: color-mix(in srgb, var(--ring) 45%, transparent); }
+}
+
+@layer components {
+  .page-stack { @apply flex min-w-0 flex-col gap-6; }
+  .data-table { @apply w-full border-collapse text-left text-sm; }
+  .data-table thead { @apply bg-muted/45; }
+  .data-table th { @apply relative h-10 whitespace-nowrap px-5 text-xs font-medium text-muted-foreground; }
+  .data-table td { @apply border-t px-5 py-3; }
+  .data-table tbody tr { @apply transition-colors hover:bg-muted/35; }
+  .tone-neutral { @apply border-border bg-muted text-muted-foreground; }
+  .tone-success { @apply border-success-border bg-success-soft text-success; }
+  .tone-info { @apply border-info-border bg-info-soft text-info; }
+  .tone-warning { @apply border-warning-border bg-warning-soft text-warning; }
+  .tone-danger { @apply border-danger-border bg-danger-soft text-danger; }
+}
+
+.xterm { height: 100%; }
+.xterm .xterm-viewport { border-radius: 3px; background-color: transparent !important; }
+.log-output { tab-size: 4; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
