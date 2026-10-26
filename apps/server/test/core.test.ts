@@ -469,6 +469,49 @@ test('TRUST_PROXY accepts hop counts, booleans and address lists', () => {
   assert.equal(trustProxy('loopback, 10.0.0.0/8'), 'loopback, 10.0.0.0/8');
 });
 
+test('invalid OAuth requests return 4xx with a standard error body and server faults stay 500', async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'hostherd-http-errors-'));
+  const app = await createApp({ dataDir: dir, publicUrl: 'http://localhost:3000' });
+  await new Promise<void>(resolve => app.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${(app.server.address() as { port: number }).port}`;
+  const logged: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); };
+  t.after(async () => { console.error = original; await app.close(); await rm(dir, { recursive: true, force: true }); });
+
+  const interaction = await fetch(`${base}/oauth/interaction/00000000-0000-4000-8000-000000000001`);
+  assert.equal(interaction.status, 400);
+  assert.deepEqual(await interaction.json(), { error: 'interaction session id cookie not found', code: 'invalid_request' });
+  assert.equal(logged.some(line => line.startsWith('Request failed')), false);
+
+  const token = await fetch(`${base}/oauth/token`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'grant_type=authorization_code' });
+  assert.equal(token.status, 400);
+  const tokenBody = await token.json() as { error?: string; error_description?: string; code?: string };
+  assert.equal(tokenBody.error, 'invalid_request');
+  assert.equal(typeof tokenBody.error_description, 'string');
+  assert.equal(tokenBody.code, undefined);
+
+  const setupToken = (await readFile(path.join(dir, 'setup-token'), 'utf8')).trim();
+  const setup = await fetch(`${base}/api/setup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'owner', password: 'test-password-123', setupToken }) });
+  assert.equal(setup.status, 201);
+  const cookie = setup.headers.getSetCookie().map(c => c.split(';')[0]).join('; ');
+  const missing = await fetch(`${base}/api/jobs/${randomUUID()}`, { headers: { Cookie: cookie } });
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json() as { code: string }).code, 'JOB_NOT_FOUND');
+
+  const { code } = app.store.enrollment('target');
+  const { serverId } = app.store.enroll(code, { hostname: 't', executionUser: 'root' });
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  app.store.saveJob(serverId, { id, kind: 'job', path: '/', cmd: 'true', status: 'completed', startedAt: now, endedAt: now });
+  app.store.db.prepare('UPDATE jobs SET output_bytes=4 WHERE id=?').run(id);
+  logged.length = 0;
+  const broken = await fetch(`${base}/api/jobs/${id}/output`, { headers: { Cookie: cookie } });
+  assert.equal(broken.status, 500);
+  assert.equal((await broken.json() as { code: string }).code, 'INTERNAL_ERROR');
+  assert.ok(logged.some(line => line.startsWith('Request failed:')));
+});
+
 test('reported version matches the release version in package.json', async () => {
   const root = JSON.parse(await readFile(new URL('../../../package.json', import.meta.url), 'utf8'));
   assert.equal(VERSION, root.version);

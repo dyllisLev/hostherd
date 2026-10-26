@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { WebSocket, WebSocketServer } from 'ws';
+import { errors as oidcErrors } from 'oidc-provider';
 import { z } from 'zod';
 import { Store, AppError, LANGUAGES } from './store.js';
 import { AgentHub } from './hub.js';
@@ -314,8 +315,11 @@ export async function createApp(options: AppOptions) {
       if (error.issues.every(i => i.message === ABSOLUTE_PATH_MESSAGE)) { res.status(400).json({ error: ABSOLUTE_PATH_MESSAGE, code: 'ABSOLUTE_PATH_REQUIRED' }); return; }
       res.status(400).json({ error: error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; '), code: 'INVALID_INPUT', params: { fields: [...new Set(error.issues.map(i => i.path.join('.')))].join(', ') } }); return;
     }
-    const status = error instanceof AppError ? error.status : 500;
+    // Interaction routes throw oidc-provider client errors (invalid_request and the rest). Those already carry a 4xx status.
+    const clientError = error instanceof oidcErrors.OIDCProviderError && error.status >= 400 && error.status < 500 ? error : undefined;
+    const status = error instanceof AppError ? error.status : clientError?.status ?? 500;
     if (status === 500) console.error('Request failed:', redactText(error instanceof Error ? error.message : 'unknown error'));
+    if (clientError) { res.status(status).json({ error: clientError.error_description || 'The request is invalid.', code: clientError.error }); return; }
     if (!(error instanceof AppError)) { res.status(status).json({ error: error instanceof Error ? error.message : 'The request failed.', code: 'INTERNAL_ERROR' }); return; }
     res.status(status).json({ error: error.message, code: error.code, ...(error.params ? { params: error.params } : {}) });
   };
