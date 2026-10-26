@@ -227,8 +227,16 @@ type connection struct {
 }
 type runnerHealth struct {
 	checked time.Time
-	err     error
+	misses  int
 }
+
+// One missed runner probe is not a fault. After a miss the next probe is due
+// runnerProbeConfirm later; a second miss means the runner is down or still silent.
+const (
+	runnerProbeInterval = 5 * time.Second
+	runnerProbeConfirm  = time.Second
+	runnerProbeTimeout  = time.Second
+)
 
 func connect(ctx context.Context, c config.Config, configPath, version string) error {
 	u, err := url.Parse(c.URL)
@@ -461,14 +469,23 @@ func (c *connection) syncJobs() error {
 		job := record.Job
 		if job.Status == "running" {
 			health := c.health[record.Owner]
-			if time.Since(health.checked) > 5*time.Second {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-				_, health.err = ipc.Health(ctx, c.c.StateDir, record.Owner)
+			interval := runnerProbeInterval
+			if health.misses > 0 {
+				interval = runnerProbeConfirm
+			}
+			if time.Since(health.checked) > interval {
+				ctx, cancel := context.WithTimeout(context.Background(), runnerProbeTimeout)
+				_, probeErr := ipc.Health(ctx, c.c.StateDir, record.Owner)
 				cancel()
 				health.checked = time.Now()
+				if probeErr != nil {
+					health.misses++
+				} else {
+					health.misses = 0
+				}
 				c.health[record.Owner] = health
 			}
-			if health.err != nil {
+			if health.misses >= 2 {
 				job.Error = "runner unavailable; execution state cannot be confirmed"
 				job.ErrorCode = "RUNNER_UNAVAILABLE"
 			}
