@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -296,6 +297,248 @@ func TestSettledJobsAreNotRescanned(t *testing.T) {
 			t.Fatal("running job not polled")
 		}
 	}
+}
+
+// A single late health reply must not raise RUNNER_UNAVAILABLE. A runner that
+// is gone, or that keeps missing the confirming probe, still faults on that probe.
+func TestSingleRunnerHealthDelayDoesNotFault(t *testing.T) {
+	t.Run("one slow reply", func(t *testing.T) {
+		t.Parallel()
+		root := shortTemp(t)
+		id := "88888888-8888-4888-8888-888888888881"
+		var calls sync.Mutex
+		var n int
+		serveRunnerHealth(t, root, "1.0.0", func(w http.ResponseWriter, r *http.Request) {
+			calls.Lock()
+			n++
+			attempt := n
+			calls.Unlock()
+			if attempt == 1 {
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(2 * time.Second):
+				}
+			}
+			writeRunnerHealth(w)
+		})
+		c, messages, mu := captureSync(t, root, id)
+		if err := c.syncJobs(); err != nil {
+			t.Fatal(err)
+		}
+		got := snapshotMessages(t, mu, messages)
+		if faults := faultMessages(got); len(faults) != 0 {
+			t.Fatal("slow reply faulted", faults)
+		}
+		for _, m := range got {
+			if m.Type == "state" && m.Job.ErrorCode != "" {
+				t.Fatal("slow reply marked the job", m.Job.ErrorCode)
+			}
+		}
+		if c.health["1.0.0"].misses != 1 {
+			t.Fatalf("misses = %d, want 1", c.health["1.0.0"].misses)
+		}
+		if err := c.syncJobs(); err != nil {
+			t.Fatal(err)
+		}
+		if c.health["1.0.0"].misses != 1 {
+			t.Fatal("pump tick counted as another miss")
+		}
+		time.Sleep(runnerProbeConfirm + 100*time.Millisecond)
+		if err := c.syncJobs(); err != nil {
+			t.Fatal(err)
+		}
+		if c.health["1.0.0"].misses != 0 {
+			t.Fatalf("recovery misses = %d", c.health["1.0.0"].misses)
+		}
+		if faults := faultMessages(snapshotMessages(t, mu, messages)); len(faults) != 0 {
+			t.Fatal("recovery faulted", faults)
+		}
+	})
+	t.Run("dead", func(t *testing.T) {
+		t.Parallel()
+		root := shortTemp(t)
+		id := "88888888-8888-4888-8888-888888888882"
+		c, messages, mu := captureSync(t, root, id)
+		started := time.Now()
+		if err := c.syncJobs(); err != nil {
+			t.Fatal(err)
+		}
+		if faults := faultMessages(snapshotMessages(t, mu, messages)); len(faults) != 0 {
+			t.Fatal("first miss faulted", faults)
+		}
+		if c.health["1.0.0"].misses != 1 {
+			t.Fatalf("misses = %d, want 1", c.health["1.0.0"].misses)
+		}
+		time.Sleep(runnerProbeConfirm + 100*time.Millisecond)
+		if err := c.syncJobs(); err != nil {
+			t.Fatal(err)
+		}
+		got := snapshotMessages(t, mu, messages)
+		faults := faultMessages(got)
+		if len(faults) != 1 || faults[0] != id+": runner unavailable; execution state cannot be confirmed" {
+			t.Fatal(faults)
+		}
+		if time.Since(started) > 3*time.Second {
+			t.Fatalf("dead runner fault took %s", time.Since(started))
+		}
+		if !sawUnavailable(got, id) {
+			t.Fatal("running job was not marked unavailable", got)
+		}
+		if err := c.syncJobs(); err != nil {
+			t.Fatal(err)
+		}
+		if faults := faultMessages(snapshotMessages(t, mu, messages)); len(faults) != 1 {
+			t.Fatal("fault repeated", faults)
+		}
+	})
+	t.Run("silent", func(t *testing.T) {
+		t.Parallel()
+		root := shortTemp(t)
+		id := "88888888-8888-4888-8888-888888888883"
+		serveRunnerHealth(t, root, "1.0.0", func(w http.ResponseWriter, r *http.Request) {
+			<-r.Context().Done()
+		})
+		c, messages, mu := captureSync(t, root, id)
+		started := time.Now()
+		if err := c.syncJobs(); err != nil {
+			t.Fatal(err)
+		}
+		if faults := faultMessages(snapshotMessages(t, mu, messages)); len(faults) != 0 {
+			t.Fatal("first timeout faulted", faults)
+		}
+		time.Sleep(runnerProbeConfirm + 100*time.Millisecond)
+		if err := c.syncJobs(); err != nil {
+			t.Fatal(err)
+		}
+		got := snapshotMessages(t, mu, messages)
+		faults := faultMessages(got)
+		if len(faults) != 1 || faults[0] != id+": runner unavailable; execution state cannot be confirmed" {
+			t.Fatal(faults)
+		}
+		if !sawUnavailable(got, id) {
+			t.Fatal("silent runner was not marked unavailable", got)
+		}
+		if time.Since(started) > 4*time.Second {
+			t.Fatalf("silent runner fault took %s", time.Since(started))
+		}
+	})
+}
+
+func shortTemp(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "rh-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
+func serveRunnerHealth(t *testing.T, root, generation string, handler http.HandlerFunc) {
+	t.Helper()
+	sock := store.SocketPath(root, generation)
+	if err := os.MkdirAll(filepath.Dir(sock), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+}
+
+func writeRunnerHealth(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "protocol": model.Protocol})
+}
+
+type captured struct {
+	Type    string    `json:"type"`
+	Job     model.Job `json:"job"`
+	Message string    `json:"message"`
+}
+
+func captureSync(t *testing.T, root, id string) (*connection, *[]captured, *sync.Mutex) {
+	t.Helper()
+	if err := os.MkdirAll(store.JobDir(root, id), 0700); err != nil {
+		t.Fatal(err)
+	}
+	job := model.Job{ID: id, Kind: "job", Status: "running", Path: "/tmp", Cmd: "true"}
+	if err := store.WriteRecord(root, model.Record{Job: job, Owner: "1.0.0"}); err != nil {
+		t.Fatal(err)
+	}
+	messages := []captured{}
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.Close()
+		for {
+			var message captured
+			if ws.ReadJSON(&message) != nil {
+				return
+			}
+			mu.Lock()
+			messages = append(messages, message)
+			mu.Unlock()
+		}
+	}))
+	t.Cleanup(server.Close)
+	ws, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ws.Close() })
+	c := &connection{ws: ws, c: config.Config{StateDir: root}, streams: map[string]*streamState{}, sentStates: map[string]string{}, settled: map[string]bool{}, wakeup: make(chan struct{}, 1), health: map[string]runnerHealth{}}
+	return c, &messages, &mu
+}
+
+func snapshotMessages(t *testing.T, mu *sync.Mutex, messages *[]captured) []captured {
+	t.Helper()
+	var last []captured
+	stableSince := time.Now()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		got := append([]captured(nil), (*messages)...)
+		mu.Unlock()
+		if len(got) == len(last) && len(got) > 0 && time.Since(stableSince) >= 150*time.Millisecond {
+			return got
+		}
+		if len(got) != len(last) {
+			last = got
+			stableSince = time.Now()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(last) == 0 {
+		t.Fatal("no agent messages")
+	}
+	return last
+}
+
+func faultMessages(messages []captured) []string {
+	var out []string
+	for _, m := range messages {
+		if m.Type == "fault" {
+			out = append(out, m.Message)
+		}
+	}
+	return out
+}
+
+func sawUnavailable(messages []captured, id string) bool {
+	for _, m := range messages {
+		if m.Type == "state" && m.Job.ID == id && m.Job.ErrorCode == "RUNNER_UNAVAILABLE" {
+			return true
+		}
+	}
+	return false
 }
 
 type peer struct {
