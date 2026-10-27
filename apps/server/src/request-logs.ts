@@ -21,6 +21,8 @@ export interface RequestLogFilters {
   q?: string; cursor?: string; limit?: number;
 }
 type ObjectValue = Record<string, unknown>;
+/** Completed request logs. Unfinished requests stay until they end. */
+const REQUEST_LOG_RETENTION_MS = 7 * 86400_000;
 const COMMAND_TOOLS = new Set(['job_start', 'job_input', 'job_cancel']);
 /** Tool errors that mean the command policy held the call, not that it failed. */
 const HELD_CODES = new Set(['APPROVAL_REQUIRED', 'APPROVAL_DENIED', 'COMMAND_BLOCKED']);
@@ -355,6 +357,6 @@ export class RequestLogs {
   }
 
   cleanup(now = Date.now()) {
-    this.safe(() => this.store.db.prepare('DELETE FROM request_logs WHERE ended_at IS NOT NULL AND ended_at < ?').run(new Date(now - 30 * 86400_000).toISOString()));
+    this.safe(() => this.store.db.prepare('DELETE FROM request_logs WHERE ended_at IS NOT NULL AND ended_at < ?').run(new Date(now - REQUEST_LOG_RETENTION_MS).toISOString()));
   }
 }
