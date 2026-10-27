@@ -8,7 +8,7 @@ import { once } from 'node:events';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { WebSocket } from 'ws';
 import Database from 'better-sqlite3';
-import { Store } from '../src/store.js';
+import { STALE_OPEN_JOB_MS, Store } from '../src/store.js';
 import { createApp, trustProxy } from '../src/app.js';
 import { textChunk } from '../src/mcp.js';
 import { VERSION } from '../src/version.js';
@@ -48,21 +48,58 @@ test('output is byte-exact across retransmission and reopening; retention only r
     await store.cleanup();
     assert.equal(store.jobs().length, 2);
     assert.equal(store.job(id).status, 'running');
-    assert.equal(store.job(active).status, 'running');
+    assert.equal(store.job(active).status, 'lost', 'an open terminal with no agent is closed, not deleted');
     assert.throws(() => store.job(ended), { code: 'JOB_NOT_FOUND' });
-    // Running jobs of a server deleted over 30 days ago expire too; dedupe rows of expired jobs go with them.
+    // Jobs of a server deleted over 30 days ago expire too; dedupe rows of expired jobs go with them.
     const gone = store.enroll(store.enrollment('gone').code, { hostname: 'gone', executionUser: 'root' }).serverId;
     const orphan = randomUUID(), requestId = randomUUID();
     store.saveJob(gone, { id: orphan, kind: 'job', path: '/', cmd: 'sleep', status: 'running', startedAt: old });
     store.rememberRequest(requestId, { cmd: 'sleep' }, orphan);
     store.deleteServer(gone);
     await store.cleanup();
-    assert.equal(store.job(orphan).status, 'running', 'a recent deletion keeps the record');
+    assert.equal(store.job(orphan).status, 'lost', 'a recent deletion keeps the record');
     store.db.prepare('UPDATE servers SET deleted_at=? WHERE id=?').run(old, gone);
     await store.cleanup();
     assert.throws(() => store.job(orphan), { code: 'JOB_NOT_FOUND' });
     assert.equal(store.request(requestId, { cmd: 'other' }), undefined);
-    assert.equal(store.job(active).status, 'running');
+    assert.equal(store.job(active).status, 'lost');
+  } finally { store.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('stale open jobs are closed as lost; fresh jobs and jobs on a connected agent stay open', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'hostherd-stale-jobs-'));
+  const store = new Store(dir);
+  try {
+    const offline = store.enroll(store.enrollment('offline').code, { hostname: 'offline', executionUser: 'root' }).serverId;
+    const online = store.enroll(store.enrollment('online').code, { hostname: 'online', executionUser: 'root' }).serverId;
+    const now = Date.now();
+    const stale = new Date(now - STALE_OPEN_JOB_MS - 60_000).toISOString();
+    const fresh = new Date(now).toISOString();
+    const staleUnknown = randomUUID(), freshUnknown = randomUUID(), staleRunning = randomUUID(), liveUnknown = randomUUID(), liveRunning = randomUUID();
+    const job = (id: string, status: string, startedAt: string, cmd: string) => ({ id, kind: 'job' as const, path: '/', cmd, status, startedAt });
+    store.saveJob(offline, job(staleUnknown, 'unknown', stale, 'gone'));
+    store.saveJob(offline, job(freshUnknown, 'unknown', fresh, 'fresh'));
+    store.saveJob(offline, job(staleRunning, 'running', stale, 'still-out'));
+    store.saveJob(online, job(liveUnknown, 'unknown', stale, 'live-unknown'));
+    store.saveJob(online, job(liveRunning, 'running', stale, 'live-running'));
+    await store.cleanup(now, id => id === online);
+    const closed = store.job(staleUnknown);
+    assert.equal(closed.status, 'lost');
+    assert.equal(closed.errorCode, 'RESULT_LOST');
+    assert.ok(closed.endedAt);
+    assert.equal(store.jobPage({ status: 'lost', limit: 10, offset: 0 }).items.some(item => item.id === staleUnknown), true);
+    assert.equal(store.job(freshUnknown).status, 'unknown');
+    assert.equal(store.job(freshUnknown).endedAt, undefined);
+    assert.equal(store.job(staleRunning).status, 'lost');
+    assert.equal(store.job(liveUnknown).status, 'unknown');
+    assert.equal(store.job(liveUnknown).endedAt, undefined);
+    assert.equal(store.job(liveRunning).status, 'running');
+    assert.equal(store.job(liveRunning).endedAt, undefined);
+    store.saveJob(offline, job(staleUnknown, 'running', stale, 'gone'));
+    assert.equal(store.job(staleUnknown).status, 'lost', 'a later running report does not reopen a lost result');
+    await store.cleanup(now + 31 * 86400_000, id => id === online);
+    assert.throws(() => store.job(staleUnknown), { code: 'JOB_NOT_FOUND' });
+    assert.equal(store.job(liveRunning).status, 'running');
   } finally { store.close(); await rm(dir, { recursive: true, force: true }); }
 });
 

@@ -11,7 +11,7 @@ export const en: Dictionary = {
     pageError: 'This page couldn’t be displayed', pageErrorDescription: 'This may be a temporary error. Reload the page to try again.', pageUpdated: 'The console has been updated to a new version. Reload the page.', reload: 'Reload',
   },
   status: {
-    online: 'Online', offline: 'Offline', running: 'Running', completed: 'Completed', failed: 'Failed', interrupted: 'Interrupted', unknown: 'Status unknown', pending: 'Checking',
+    online: 'Online', offline: 'Offline', running: 'Running', completed: 'Completed', failed: 'Failed', interrupted: 'Interrupted', lost: 'Result lost', unknown: 'Status unknown', pending: 'Checking',
   },
   time: {
     justNow: 'just now', seconds: '{n}s', minutes: '{m}m', hours: '{h}h', daysHours: '{d}d {h}h', minutesSeconds: '{m}m {s}s', hoursMinutes: '{h}h {m}m', monthDay: '{month}/{day}',
@@ -152,7 +152,7 @@ export const en: Dictionary = {
     command: 'Command', server: 'Server', status: 'Status', started: 'Started', duration: 'Duration', exitCode: 'Exit code', terminalSession: 'Terminal session',
     emptyTitle: 'No jobs yet', emptyDescription: 'Run a command over MCP to see its status and output here.',
     noMatches: 'No jobs match', noMatchesHint: 'Try a different search or filter.',
-    retention: 'Finished jobs and their output are kept for 30 days. Running jobs are never expired.',
+    retention: 'Finished jobs and their output are kept for 30 days. A job with no final result is closed as result lost after 24 hours if its agent is offline, then kept for 30 days.',
   },
   terminal: {
     label: 'Remote shell terminal',
@@ -336,6 +336,7 @@ export const en: Dictionary = {
     PASSWORD_RATE_LIMITED: "Too many attempts. Try again later.",
     PAYLOAD_TOO_LARGE: "Request body exceeds the size limit.",
     REQUEST_CONFLICT: "requestId was already used with different arguments. Use a new requestId.",
+    RESULT_LOST: "The final result was lost. The agent did not report how the job ended.",
     RESPONSE_INTERRUPTED: "The response connection closed early. Check whether the linked job ran.",
     RULE_NOT_FOUND: "Rule not found.",
     RULE_PATTERN_REQUIRED: "Enter a rule pattern.",

@@ -3,7 +3,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { JobOutput } from '../components/job-output';
 import { JobTable, Pager } from '../components/job-table';
 import { Button, Card, CardHeader, ConfirmDialog, CopyButton, Details, Empty, ErrorNotice, Input, Loading, PageHeading, Select, Status, statusLabel, Textarea, Time, toast } from '../components/ui';
-import { t } from '../i18n';
+import { errorText, t } from '../i18n';
 import { formatBytes, post, useAction, useApi } from '../lib/api';
 import { formatDuration } from '../lib/time';
 import { useServers } from '../lib/app-data';
@@ -11,7 +11,7 @@ import { Link, useQueryState } from '../lib/router';
 import { isActive, type Job, type JobPage } from '../lib/types';
 
 const PAGE_SIZE = 25;
-const statuses = ['running', 'completed', 'failed', 'interrupted', 'unknown'] as const;
+const statuses = ['running', 'completed', 'failed', 'interrupted', 'lost', 'unknown'] as const;
 
 export function Jobs() {
   const servers = useServers();
@@ -63,7 +63,7 @@ export function JobDetail({ id }: { id: string }) {
       description={<>{job.serverName ? <Link href={'/servers/' + job.serverId} className="font-medium text-foreground hover:underline">{job.serverName}</Link> : t('servers.deletedServer')}<span className="font-mono"> · {job.path}</span></>}
       action={<>{!terminal && <CopyButton value={job.cmd} label={t('jobDetail.copyCommand')} />}{terminal ? <Button variant="outline" asChild><Link href={'/terminals/' + job.id}><TerminalSquare />{t('jobDetail.openTerminal')}</Link></Button> : isActive(job) && <Button variant="outline" onClick={() => { action.clearError(); setConfirm('cancel'); }}><Square />{t('jobDetail.cancel')}</Button>}</>} />
     <ErrorNotice message={result.error} retry={result.refresh} />
-    {job.error && <ErrorNotice message={job.error} />}
+    {job.error && <ErrorNotice message={(job.errorCode === 'RESULT_LOST' ? errorText(job.errorCode) : undefined) || job.error} />}
     <Card className="p-5 sm:p-6"><Details className="lg:grid-cols-4" items={[
       [t('jobDetail.started'), <Time value={job.startedAt} />], [t('jobDetail.ended'), <Time value={job.endedAt} />],
       [t('jobs.duration'), formatDuration(job.startedAt, job.endedAt)],

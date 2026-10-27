@@ -187,7 +187,7 @@ export async function createApp(options: AppOptions) {
   app.get('/api/jobs', (req, res) => {
     const query = z.object({
       kind: z.enum(['job', 'terminal']).optional(), serverId: uuid.optional(),
-      status: z.enum(['pending', 'running', 'completed', 'failed', 'interrupted', 'unknown']).optional(),
+      status: z.enum(['pending', 'running', 'completed', 'failed', 'interrupted', 'lost', 'unknown']).optional(),
       q: z.string().trim().max(500).optional(), from: z.iso.datetime({ offset: true }).optional(),
       limit: z.coerce.number().int().min(1).max(200).default(50), offset: z.coerce.number().int().min(0).default(0),
     }).parse(req.query);
@@ -392,7 +392,8 @@ export async function createApp(options: AppOptions) {
   });
   const cleanup = setInterval(() => {
     requestLogs.cleanup(); metrics.cleanup(); approvals.cleanup(); audit.cleanup();
-    void store.cleanup().catch(error => console.error('Retention cleanup failed:', error.message));
+    // Connected agents can still report how a job ended.
+    void store.cleanup(Date.now(), serverId => hub.online(serverId)).catch(error => console.error('Retention cleanup failed:', error.message));
   }, 3600_000);
   cleanup.unref();
   const rollup = setInterval(() => { try { metrics.rollup(); } catch (error) { console.error('Metrics rollup failed:', error instanceof Error ? error.message : error); } }, 300_000);
