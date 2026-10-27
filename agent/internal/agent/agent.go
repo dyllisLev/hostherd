@@ -463,8 +463,9 @@ func (c *connection) syncJobs() error {
 			continue
 		}
 		if err != nil {
-			c.send(map[string]any{"type": "fault", "message": "read job inventory: " + err.Error()})
-			return err
+			// One job's metadata must not drop the central connection.
+			log.Printf("skip job %s this sync: %v", id, err)
+			continue
 		}
 		job := record.Job
 		if job.Status == "running" {

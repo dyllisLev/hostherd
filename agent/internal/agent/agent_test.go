@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -295,6 +296,97 @@ func TestSettledJobsAreNotRescanned(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatal("running job not polled")
+		}
+	}
+}
+
+// A metadata read that still fails after the single-link retry is one job.
+// The central connection stays up and other jobs are still synced.
+func TestJobReadErrorDoesNotCloseConnection(t *testing.T) {
+	root := t.TempDir()
+	goodID := "99999999-9999-4999-8999-999999999991"
+	badID := "99999999-9999-4999-8999-999999999992"
+	if err := os.MkdirAll(store.JobDir(root, goodID), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteRecord(root, model.Record{Job: model.Job{ID: goodID, Kind: "job", Status: "completed"}, Owner: "1.0.0"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(store.JobDir(root, badID), 0700); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(secret, []byte("secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(secret, filepath.Join(store.JobDir(root, badID), "meta.json")); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(prev)
+
+	messages := make(chan string, 8)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.Close()
+		for {
+			var message struct {
+				Type string
+				Job  struct {
+					ID string `json:"id"`
+				}
+			}
+			if ws.ReadJSON(&message) != nil {
+				return
+			}
+			messages <- message.Type + " " + message.Job.ID
+		}
+	}))
+	defer server.Close()
+	ws, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	c := &connection{ws: ws, c: config.Config{StateDir: root}, streams: map[string]*streamState{}, sentStates: map[string]string{}, settled: map[string]bool{}, wakeup: make(chan struct{}, 1), health: map[string]runnerHealth{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- c.pump(ctx) }()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case err := <-errCh:
+			t.Fatal("connection closed", err)
+		case message := <-messages:
+			if message != "state "+goodID {
+				continue
+			}
+			cancel()
+			select {
+			case err := <-errCh:
+				if err != nil {
+					t.Fatal("connection closed", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("pump did not stop")
+			}
+			if !strings.Contains(logs.String(), badID) {
+				t.Fatalf("job id not logged: %s", logs.String())
+			}
+			return
+		case <-deadline:
+			cancel()
+			select {
+			case <-errCh:
+			case <-time.After(5 * time.Second):
+			}
+			t.Fatal("good job not synced", logs.String())
 		}
 	}
 }
