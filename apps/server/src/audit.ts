@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import { AppError, type Store } from './store.js';
 import { sanitize } from './request-logs.js';
 
-/** Same retention as request logs. */
+/** Incident review. Independent of request-log retention. */
 const RETENTION_MS = 30 * 86400_000;
 const DETAIL_TEXT = 300;
 /** Body fields safe to keep. Credentials, payloads and command output are not in this set. */

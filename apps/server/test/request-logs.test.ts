@@ -10,6 +10,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { WebSocket } from 'ws';
 import { createApp } from '../src/app.js';
 import { Store } from '../src/store.js';
+import { AuditLog } from '../src/audit.js';
 import { RequestLogs, redactText } from '../src/request-logs.js';
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -334,7 +335,7 @@ test('a disconnected MCP response records an uncertain delivery while the agent 
   assert.ok(detail.request.errorCode || detail.events.some(event => /clos|abort|disconnect/.test(JSON.stringify(event))), 'disconnect reason stays visible');
 });
 
-test('request logs survive reopening, recover unfinished requests and retain only thirty days after completion', async () => {
+test('request logs survive reopening, recover unfinished requests and retain only seven days after completion', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'hostherd-trace-retention-'));
   let store = new Store(dir);
   let logs = new RequestLogs(store);
@@ -371,10 +372,37 @@ test('request logs survive reopening, recover unfinished requests and retain onl
     assert.equal(store.job(jobId).status, 'running');
     logs.cleanup(now);
     assert.equal(logs.detail(activeId).request.outcome, 'unknown');
-    logs.cleanup(now + 31 * 86400_000);
+    logs.cleanup(now + 8 * 86400_000);
     assert.throws(() => logs.detail(activeId), { code: 'TRACE_NOT_FOUND' });
     assert.throws(() => logs.detail(completedId), { code: 'TRACE_NOT_FOUND' });
     assert.equal(store.job(jobId).status, 'running', 'trace cleanup never deletes linked job state');
+  } finally { store.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('an eight-day-old request log is pruned, a six-day-old log is kept, and a twenty-day-old audit event is kept', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'hostherd-retention-split-'));
+  const store = new Store(dir);
+  const logs = new RequestLogs(store);
+  const audit = new AuditLog(store);
+  const now = Date.now();
+  const day = 86400_000;
+  function seed(traceId: string, ageDays: number) {
+    const endedAt = new Date(now - ageDays * day).toISOString();
+    const record = { traceId, receivedAt: endedAt, endedAt, httpMethod: 'POST', httpPath: '/mcp', tool: 'job_start', outcome: 'success' };
+    store.db.prepare('INSERT INTO request_logs (trace_id,received_at,ended_at,server_id,tool,outcome,record) VALUES (?,?,?,?,?,?,?)')
+      .run(traceId, endedAt, endedAt, null, 'job_start', 'success', JSON.stringify(record));
+  }
+  const expiredId = randomUUID(), keptId = randomUUID();
+  try {
+    seed(expiredId, 8);
+    seed(keptId, 6);
+    store.db.prepare('INSERT INTO audit_events (at,actor,action,target,result,status,detail) VALUES (?,?,?,?,?,?,?)')
+      .run(new Date(now - 20 * day).toISOString(), 'system', 'agent.disconnect', 'kept-audit', 'ok', 1000, '{}');
+    logs.cleanup(now);
+    audit.cleanup(now);
+    assert.throws(() => logs.detail(expiredId), { code: 'TRACE_NOT_FOUND' });
+    assert.equal(logs.detail(keptId).request.outcome, 'success');
+    assert.deepEqual(audit.list(10).items.map(event => event.target), ['kept-audit']);
   } finally { store.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
