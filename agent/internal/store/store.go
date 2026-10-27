@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"time"
 
 	"hostherd/agent/internal/model"
 )
@@ -65,22 +66,39 @@ func AtomicWrite(path string, b []byte, mode os.FileMode) error {
 	return SyncDir(filepath.Dir(path))
 }
 
+// beforeRegularStat runs after open and before the single-link check.
+// Tests replace the file in that window. Empty in production.
+var beforeRegularStat = func() {}
+
 // OpenRegular opens an existing regular file of the runtime state. It refuses
 // hard links: the execution account owns the state directory, and a link to a
 // file it cannot read would otherwise be read by the root agent.
+// Renaming a new file over path unlinks the inode already opened, so fstat
+// can see nlink 0 for a file that was valid. That check is retried; a link
+// or non-regular file that is still there after the retries is rejected.
 func OpenRegular(path string) (*os.File, error) {
-	f, err := os.OpenFile(path, readFlags, 0)
-	if err != nil {
-		return nil, err
-	}
-	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() || !singleLink(info) {
-		f.Close()
-		if err == nil {
-			err = fmt.Errorf("%s is not a regular file with a single link", path)
+	const attempts = 3
+	var last error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(2 * time.Millisecond)
 		}
-		return nil, err
+		f, err := os.OpenFile(path, readFlags, 0)
+		if err != nil {
+			return nil, err
+		}
+		beforeRegularStat()
+		info, statErr := f.Stat()
+		if statErr == nil && info.Mode().IsRegular() && singleLink(info) {
+			return f, nil
+		}
+		f.Close()
+		if statErr != nil {
+			return nil, statErr
+		}
+		last = fmt.Errorf("%s is not a regular file with a single link", path)
 	}
-	return f, nil
+	return nil, last
 }
 func ReadRegular(path string) ([]byte, error) {
 	f, err := OpenRegular(path)
