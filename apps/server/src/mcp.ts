@@ -192,7 +192,7 @@ export function mountMcp(app: Express, hub: AgentHub, authenticate: Authenticato
     }, { readOnlyHint: false, destructiveHint: false, openWorldHint: false });
     add('jobs_list', 'List command jobs, newest first, with their last known state. Long cmd values are shortened; job_status returns the full record. more=true means older jobs exist beyond limit. Offline servers cannot report fresh process state.', {
       serverId: serverId.optional(),
-      status: z.enum(['pending', 'running', 'completed', 'failed', 'interrupted', 'unknown']).optional().describe('Only jobs in this state.'),
+      status: z.enum(['pending', 'running', 'completed', 'failed', 'interrupted', 'lost', 'unknown']).optional().describe('Only jobs in this state.'),
       limit: z.number().int().min(1).max(500).default(50).describe('Maximum jobs to return.'),
     }, ({ serverId, status, limit }) => {
       const { items, total } = hub.store.jobPage({ kind: 'job', serverId, status, limit, offset: 0 });

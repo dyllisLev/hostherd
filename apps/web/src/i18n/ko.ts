@@ -9,7 +9,7 @@ export const ko = {
     pageError: '화면을 표시하지 못했습니다', pageErrorDescription: '일시적인 오류일 수 있습니다. 새로고침해 다시 시도하세요.', pageUpdated: '콘솔이 새 버전으로 업데이트되었습니다. 새로고침하세요.', reload: '새로고침',
   },
   status: {
-    online: '온라인', offline: '오프라인', running: '실행 중', completed: '완료', failed: '실패', interrupted: '중단됨', unknown: '실행 여부 미확인', pending: '확인 중',
+    online: '온라인', offline: '오프라인', running: '실행 중', completed: '완료', failed: '실패', interrupted: '중단됨', lost: '결과 유실', unknown: '실행 여부 미확인', pending: '확인 중',
   },
   time: {
     justNow: '방금 전', seconds: '{n}초', minutes: '{m}분', hours: '{h}시간', daysHours: '{d}일 {h}시간', minutesSeconds: '{m}분 {s}초', hoursMinutes: '{h}시간 {m}분', monthDay: '{month}/{day}',
@@ -150,7 +150,7 @@ export const ko = {
     command: '명령', server: '서버', status: '상태', started: '시작', duration: '소요 시간', exitCode: '종료 코드', terminalSession: '터미널 세션',
     emptyTitle: '아직 실행한 작업이 없습니다', emptyDescription: 'MCP에서 명령을 실행하면 작업 상태와 출력을 이곳에서 확인할 수 있습니다.',
     noMatches: '조건에 맞는 작업이 없습니다', noMatchesHint: '검색어나 필터를 바꿔 보세요.',
-    retention: '완료된 기록과 출력은 30일간 보관합니다. 실행 중인 작업에는 보관 기한을 적용하지 않습니다.',
+    retention: '완료된 기록과 출력은 30일간 보관합니다. 최종 결과가 없는 작업은 에이전트가 오프라인인 채 24시간이 지나면 결과 유실로 마감한 뒤 30일간 보관합니다.',
   },
   terminal: {
     label: '원격 셸 터미널',
@@ -335,6 +335,7 @@ export const ko = {
     PASSWORD_RATE_LIMITED: "잠시 후 다시 시도해 주세요.",
     PAYLOAD_TOO_LARGE: "요청 본문이 크기 제한을 넘었습니다.",
     REQUEST_CONFLICT: "같은 요청 ID에 다른 명령을 사용할 수 없습니다.",
+    RESULT_LOST: "최종 결과를 잃었습니다. 에이전트가 종료 상태를 보고하지 않았습니다.",
     RESPONSE_INTERRUPTED: "응답 연결이 종료되었습니다. 연결된 작업의 실행 여부를 확인하세요.",
     RULE_NOT_FOUND: "규칙을 찾을 수 없습니다.",
     RULE_PATTERN_REQUIRED: "규칙 패턴을 입력하세요.",

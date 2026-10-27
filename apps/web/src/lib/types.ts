@@ -115,7 +115,7 @@ export function isOlderVersion(current: string, latest?: string | null) {
 }
 
 export function isActive(job: Job) {
-  return !['completed', 'failed', 'interrupted'].includes(job.status);
+  return !['completed', 'failed', 'interrupted', 'lost'].includes(job.status);
 }
 
 export type RequestOutcome = 'pending' | 'success' | 'error' | 'unknown';

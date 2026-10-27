@@ -61,7 +61,7 @@ export function Badge({ children, className, tone }: { children: ReactNode; clas
 export function Dot({ tone, pulse = false, className }: { tone: Tone; pulse?: boolean; className?: string }) {
   return <span className={cn('relative inline-flex size-2 shrink-0 rounded-full', dotTone[tone], className)}>{pulse && <span className={cn('absolute inset-0 animate-ping rounded-full opacity-60', dotTone[tone])} />}</span>;
 }
-const statusTone: Record<string, Tone> = { online: 'success', completed: 'success', running: 'info', pending: 'neutral', unknown: 'warning', interrupted: 'warning', failed: 'danger', offline: 'neutral' };
+const statusTone: Record<string, Tone> = { online: 'success', completed: 'success', running: 'info', pending: 'neutral', unknown: 'warning', interrupted: 'warning', lost: 'warning', failed: 'danger', offline: 'neutral' };
 export function statusLabel(status: string) {
   const key = 'status.' + status;
   const label = t(key as never);

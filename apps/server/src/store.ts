@@ -26,7 +26,10 @@ export interface ServerRecord {
 
 export interface JobQuery { kind?: string; serverId?: string; status?: string; q?: string; from?: string; limit: number; offset: number }
 export interface ActivityDay { date: string; completed: number; failed: number; interrupted: number; other: number }
-const FINISHED = ['completed', 'failed', 'interrupted'];
+const FINISHED = ['completed', 'failed', 'interrupted', 'lost'];
+/** Open jobs older than this are closed when their agent is not connected. */
+export const STALE_OPEN_JOB_MS = 24 * 3600_000;
+const LOST_ERROR = 'The final result was lost. The agent did not report how the job ended.';
 
 // Ordered schema changes; PRAGMA user_version records how many have run.
 const MIGRATIONS: ((db: Database.Database) => void)[] = [
@@ -291,7 +294,8 @@ export class Store extends EventEmitter {
     }
     return { data: bytes.toString('base64'), cursor, nextCursor: cursor + length, eof: cursor + length >= job.outputBytes };
   }
-  async cleanup(now = Date.now()) {
+  async cleanup(now = Date.now(), connected: (serverId: string) => boolean = () => false) {
+    this.closeStaleJobs(now, connected);
     const cutoff = new Date(now - 30 * 86400_000).toISOString();
     // Jobs of servers deleted before the cutoff expire too: they can never report an end.
     const rows = this.db.prepare(`SELECT id FROM jobs WHERE expired=0 AND ((ended_at IS NOT NULL AND ended_at<?)
@@ -303,6 +307,28 @@ export class Store extends EventEmitter {
     }
     this.db.prepare('DELETE FROM requests WHERE job_id IN (SELECT id FROM jobs WHERE expired=1)').run();
     this.db.prepare('DELETE FROM enrollments WHERE expires_at<?').run(new Date(now).toISOString());
+  }
+  /** Mark open jobs whose result never arrived. Rows stay until the normal retention cutoff. */
+  private closeStaleJobs(now: number, connected: (serverId: string) => boolean) {
+    const cutoff = new Date(now - STALE_OPEN_JOB_MS).toISOString();
+    const endedAt = new Date(now).toISOString();
+    const rows = this.db.prepare(`SELECT id, server_id, state FROM jobs WHERE expired=0 AND status IN ('pending','running','unknown')
+      AND (started_at IS NULL OR started_at<?)`).all(cutoff) as { id: string; server_id: string; state: string }[];
+    const update = this.db.prepare(`UPDATE jobs SET state=?, status='lost', ended_at=? WHERE id=? AND expired=0 AND status IN ('pending','running','unknown')`);
+    const changed = this.db.transaction(() => {
+      const updated: { id: string; serverId: string }[] = [];
+      for (const row of rows) {
+        if (connected(row.server_id)) continue;
+        const state = JSON.parse(row.state) as Record<string, unknown>;
+        state.status = 'lost';
+        state.endedAt = endedAt;
+        state.error = LOST_ERROR;
+        state.errorCode = 'RESULT_LOST';
+        if (update.run(JSON.stringify(state), endedAt, row.id).changes) updated.push({ id: row.id, serverId: row.server_id });
+      }
+      return updated;
+    })();
+    for (const row of changed) this.emit('job', row.id, row.serverId);
   }
   close() { this.db.close(); }
 }
