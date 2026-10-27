@@ -695,12 +695,13 @@ func (h *testCentral) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var msg struct {
-			Type    string    `json:"type"`
-			Job     model.Job `json:"job"`
-			JobID   string    `json:"jobId"`
-			Offset  int64     `json:"offset"`
-			Data    string    `json:"data"`
-			Message string    `json:"message"`
+			Type    string      `json:"type"`
+			Job     model.Job   `json:"job"`
+			Jobs    []model.Job `json:"jobs"`
+			JobID   string      `json:"jobId"`
+			Offset  int64       `json:"offset"`
+			Data    string      `json:"data"`
+			Message string      `json:"message"`
 		}
 		if err = json.Unmarshal(raw, &msg); err != nil {
 			return
@@ -712,7 +713,13 @@ func (h *testCentral) serve(w http.ResponseWriter, r *http.Request) {
 			h.mu.Unlock()
 		case "state":
 			h.mu.Lock()
-			h.jobs[msg.Job.ID] = msg.Job
+			jobs := msg.Jobs
+			if len(jobs) == 0 && msg.Job.ID != "" {
+				jobs = []model.Job{msg.Job}
+			}
+			for _, job := range jobs {
+				h.jobs[job.ID] = job
+			}
 			h.mu.Unlock()
 		case "response":
 			var response model.Response
