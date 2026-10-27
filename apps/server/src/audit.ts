@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import { AppError, type Store } from './store.js';
 import { sanitize } from './request-logs.js';
 
-/** Same retention as request logs. */
+/** Incident review. Independent of request-log retention. */
 const RETENTION_MS = 30 * 86400_000;
 const DETAIL_TEXT = 300;
 /** Body fields safe to keep. Credentials, payloads and command output are not in this set. */
@@ -51,6 +51,8 @@ export class AuditLog {
   /** Agent socket opened after hello, or closed. `reason` is the close reason or error message. */
   connection(serverId: string, action: 'agent.connect' | 'agent.disconnect', status?: number, reason?: string) {
     const text = reason?.trim();
+    // 1000 and 1001 are planned closes (normal, or going away for shutdown/update).
+    // 1006, protocol errors, and heartbeat timeouts stay errors.
     const normal = action === 'agent.connect' || status === 1000 || status === 1001;
     this.record({
       actor: `agent:${serverId}`, action, target: serverId,

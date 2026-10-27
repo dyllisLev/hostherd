@@ -63,10 +63,15 @@ const MIGRATIONS: ((db: Database.Database) => void)[] = [
   },
 ];
 
+type JobState = Omit<Job, 'serverId' | 'outputBytes' | 'label'>;
+type StoredJobRow = { server_id: string; expired: number; state: string };
+
 /** Emits 'servers' when server records change and 'job' (id, serverId) when a job state is stored. */
 export class Store extends EventEmitter {
   readonly db: Database.Database;
   readonly outputDir: string;
+  private readonly readJobRow: Database.Statement;
+  private readonly writeJobState: Database.Statement;
   constructor(readonly dataDir: string) {
     super();
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -97,6 +102,9 @@ export class Store extends EventEmitter {
       CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
     this.migrate();
+    this.readJobRow = this.db.prepare('SELECT server_id,expired,state FROM jobs WHERE id=?');
+    this.writeJobState = this.db.prepare(`INSERT INTO jobs (id,server_id,kind,state,ended_at,status,started_at) VALUES (?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET state=excluded.state,ended_at=excluded.ended_at,status=excluded.status,started_at=excluded.started_at`);
   }
   private migrate() {
     const version = this.db.pragma('user_version', { simple: true }) as number;
@@ -167,17 +175,42 @@ export class Store extends EventEmitter {
     this.db.prepare('UPDATE jobs SET label=? WHERE id=?').run(label, id);
     this.emit('job', id, this.job(id).serverId);
   }
-  saveJob(serverId: string, state: Omit<Job, 'serverId' | 'outputBytes' | 'label'>) {
-    if (!/^[a-zA-Z0-9-]{1,100}$/.test(state.id)) throw new AppError('BAD_ID', 'Invalid job ID');
-    const old = this.db.prepare('SELECT server_id,expired,state FROM jobs WHERE id=?').get(state.id) as { server_id: string; expired: number; state: string } | undefined;
-    if (old && old.server_id !== serverId) throw new AppError('JOB_OWNER', 'Job belongs to another server', 403);
-    if (old?.expired) return;
-    // A fast command can finish before its start RPC response arrives.
-    if (old && FINISHED.includes(JSON.parse(old.state).status) && ['running', 'pending', 'unknown'].includes(state.status)) return;
-    this.db.prepare(`INSERT INTO jobs (id,server_id,kind,state,ended_at,status,started_at) VALUES (?,?,?,?,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET state=excluded.state,ended_at=excluded.ended_at,status=excluded.status,started_at=excluded.started_at`)
-      .run(state.id, serverId, state.kind, JSON.stringify(state), state.endedAt ?? null, state.status, state.startedAt);
-    this.emit('job', state.id, serverId);
+  saveJob(serverId: string, state: JobState) {
+    const { saved, errors } = this.applyJobStates(serverId, [state]);
+    if (errors.length) throw errors[0].error;
+    if (saved.length) this.emit('job', state.id, serverId);
+  }
+  /**
+   * One agent's sync. Every job is upserted in order in a single transaction;
+   * a job that cannot be stored is skipped and the rest are kept.
+   */
+  saveJobStates(serverId: string, states: JobState[], beforeEach?: (state: JobState, previous: { status?: string; error?: string } | undefined) => void) {
+    if (states.length === 0) return [] as { id: string; error: Error }[];
+    const { saved, errors } = this.db.transaction(() => this.applyJobStates(serverId, states, beforeEach))();
+    for (const id of saved) this.emit('job', id, serverId);
+    return errors;
+  }
+  private applyJobStates(serverId: string, states: JobState[], beforeEach?: (state: JobState, previous: { status?: string; error?: string } | undefined) => void) {
+    const saved: string[] = [];
+    const errors: { id: string; error: Error }[] = [];
+    for (const state of states) {
+      const id = typeof state?.id === 'string' ? state.id : '';
+      try {
+        if (!state || !/^[a-zA-Z0-9-]{1,100}$/.test(state.id)) throw new AppError('BAD_ID', 'Invalid job ID');
+        const old = this.readJobRow.get(state.id) as StoredJobRow | undefined;
+        const previous = old && old.server_id === serverId ? JSON.parse(old.state) as { status?: string; error?: string } : undefined;
+        beforeEach?.(state, previous);
+        if (old && old.server_id !== serverId) throw new AppError('JOB_OWNER', 'Job belongs to another server', 403);
+        if (old?.expired) continue;
+        // A fast command can finish before its start RPC response arrives.
+        if (previous && FINISHED.includes(previous.status ?? '') && ['running', 'pending', 'unknown'].includes(state.status)) continue;
+        this.writeJobState.run(state.id, serverId, state.kind, JSON.stringify(state), state.endedAt ?? null, state.status, state.startedAt);
+        saved.push(state.id);
+      } catch (error) {
+        errors.push({ id, error: error instanceof Error ? error : new Error('Invalid job state') });
+      }
+    }
+    return { saved, errors };
   }
   jobs(kind?: string, serverId?: string): Job[] {
     const rows = this.db.prepare(`SELECT j.*,s.name server_name FROM jobs j JOIN servers s ON s.id=j.server_id

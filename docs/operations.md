@@ -49,7 +49,7 @@ Restore with the same or a newer Hostherd version than the one that made the bac
 | Data | Kept for |
 |---|---|
 | Finished jobs and their output | 30 days after they end. A job or terminal still pending, running, or unknown after 24 hours is marked result lost when its agent is not connected, then kept for 30 days. |
-| MCP request log | 30 days |
+| MCP request log | 7 days |
 | Approval history | 30 days |
 | Resource metrics | raw samples 48 hours, 5-minute summaries 35 days, hourly summaries 400 days |
 | Download links created by `file_download` | 1 hour after completion |

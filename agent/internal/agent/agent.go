@@ -236,7 +236,63 @@ const (
 	runnerProbeInterval = 5 * time.Second
 	runnerProbeConfirm  = time.Second
 	runnerProbeTimeout  = time.Second
+	// Stay under the central WebSocket frame limit (12 MiB).
+	stateBatchLimit = 8 << 20
 )
+
+type pendingState struct {
+	job model.Job
+	raw string
+}
+
+// flushStates sends job states gathered by one sync. A single job keeps the
+// original message shape; several jobs travel together so central can commit
+// them in one transaction. sentStates is updated only after a successful send.
+func (c *connection) flushStates(pending *[]pendingState) error {
+	list := *pending
+	if len(list) == 0 {
+		return nil
+	}
+	batch := make([]model.Job, 0, len(list))
+	raws := make([]string, 0, len(list))
+	size := 0
+	send := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		var message any
+		if len(batch) == 1 {
+			message = map[string]any{"type": "state", "job": batch[0]}
+		} else {
+			message = map[string]any{"type": "state", "jobs": append([]model.Job(nil), batch...)}
+		}
+		if err := c.send(message); err != nil {
+			return err
+		}
+		for i, job := range batch {
+			c.sentStates[job.ID] = raws[i]
+		}
+		batch = batch[:0]
+		raws = raws[:0]
+		size = 0
+		return nil
+	}
+	for _, item := range list {
+		if len(batch) > 0 && size+len(item.raw) > stateBatchLimit {
+			if err := send(); err != nil {
+				return err
+			}
+		}
+		batch = append(batch, item.job)
+		raws = append(raws, item.raw)
+		size += len(item.raw)
+	}
+	if err := send(); err != nil {
+		return err
+	}
+	*pending = nil
+	return nil
+}
 
 func connect(ctx context.Context, c config.Config, configPath, version string) error {
 	u, err := url.Parse(c.URL)
@@ -265,10 +321,20 @@ func connect(ctx context.Context, c config.Config, configPath, version string) e
 		return err
 	}
 	defer ws.Close()
+	parent := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	conn := &connection{ws: ws, c: c, configPath: configPath, streams: map[string]*streamState{}, sentStates: map[string]string{}, settled: map[string]bool{}, wakeup: make(chan struct{}, 1), health: map[string]runnerHealth{}}
-	go func() { <-ctx.Done(); ws.Close() }()
+	// SIGTERM, service stop, and an update restart cancel the parent context.
+	// Send 1001 before dropping TCP; a bare close is recorded as 1006.
+	// Other exits stay abrupt so a fault is not reported as a planned shutdown.
+	go func() {
+		<-ctx.Done()
+		if parent.Err() != nil {
+			_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseGoingAway, "shutdown"), time.Now().Add(time.Second))
+		}
+		_ = ws.Close()
+	}()
 	ws.SetReadLimit(32 << 20)
 	ws.SetReadDeadline(time.Now().Add(60 * time.Second))
 	ws.SetPongHandler(func(string) error { return ws.SetReadDeadline(time.Now().Add(60 * time.Second)) })
@@ -454,6 +520,7 @@ func (c *connection) syncJobs() error {
 		c.send(map[string]any{"type": "fault", "message": "read job inventory: " + err.Error()})
 		return err
 	}
+	var pending []pendingState
 	for _, id := range ids {
 		if c.settled[id] {
 			continue
@@ -492,12 +559,14 @@ func (c *connection) syncJobs() error {
 			}
 		}
 		b, _ := json.Marshal(job)
-		if c.sentStates[job.ID] != string(b) {
-			if err = c.send(map[string]any{"type": "state", "job": job}); err != nil {
-				return err
-			}
-			c.sentStates[job.ID] = string(b)
+		raw := string(b)
+		if c.sentStates[job.ID] != raw {
+			pending = append(pending, pendingState{job: job, raw: raw})
+			// The fault must follow the stored state, so flush before sending it.
 			if isRuntimeFault(job) {
+				if err = c.flushStates(&pending); err != nil {
+					return err
+				}
 				if err = c.send(map[string]any{"type": "fault", "message": job.ID + ": " + job.Error}); err != nil {
 					return err
 				}
@@ -517,7 +586,12 @@ func (c *connection) syncJobs() error {
 		// Welcome cursors are durable too; persist ACKs even if the prior socket
 		// disconnected before its final ACK reached the agent.
 		if err = spool.Ack(dir, s.cursor); err != nil {
-			err = c.outputFault(job.ID, s, err)
+			ackErr := err
+			if err = c.flushStates(&pending); err != nil {
+				c.mu.Unlock()
+				return err
+			}
+			err = c.outputFault(job.ID, s, ackErr)
 			c.mu.Unlock()
 			if err != nil {
 				return err
@@ -526,6 +600,10 @@ func (c *connection) syncJobs() error {
 		}
 		data, readErr := spool.Read(dir, s.cursor)
 		if readErr != nil {
+			if err = c.flushStates(&pending); err != nil {
+				c.mu.Unlock()
+				return err
+			}
 			err = c.outputFault(job.ID, s, readErr)
 			c.mu.Unlock()
 			if err != nil {
@@ -546,11 +624,14 @@ func (c *connection) syncJobs() error {
 		s.pendingEnd = offset + int64(len(data))
 		s.sentAt = time.Now()
 		c.mu.Unlock()
+		if err = c.flushStates(&pending); err != nil {
+			return err
+		}
 		if err = c.send(map[string]any{"type": "output", "jobId": job.ID, "offset": offset, "data": base64.StdEncoding.EncodeToString(data)}); err != nil {
 			return err
 		}
 	}
-	return nil
+	return c.flushStates(&pending)
 }
 func isRuntimeFault(job model.Job) bool {
 	if job.Error == "" {

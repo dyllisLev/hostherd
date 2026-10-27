@@ -188,7 +188,7 @@ export const en: Dictionary = {
     incomplete: 'Partially logged', incompleteHint: 'An error occurred while logging this request. Some processing steps or the result may be missing.', toolError: 'Tool error',
     emptyTitle: 'No requests match', emptyDescription: 'Check the time range and filters. Requests from before logging started can’t be recovered.',
     pageSummary: 'Page {page} · {n} {n:request|requests}',
-    scope: 'Only requests that reach Hostherd are logged, and they are kept for 30 days after they finish. Requests rejected by ChatGPT or a proxy before being sent are not logged, so a missing record alone doesn’t tell you whether a safety block occurred.',
+    scope: 'Only requests that reach Hostherd are logged, and they are kept for 7 days after they finish. Requests rejected by ChatGPT or a proxy before being sent are not logged, so a missing record alone doesn’t tell you whether a safety block occurred.',
     responseScope: 'The result reflects the state at response time. A tool can fail even with HTTP 200, and this result doesn’t change if the linked job changes later.',
     linked: 'Linked execution', linkedHint: 'Current job or transfer status; it may differ from the result at response time.', job: 'Job', viewJobOutput: 'View job output', jobMissing: 'The linked job’s current record can’t be found.',
     transfer: 'File transfer', transferId: 'Transfer ID', transferred: 'Transferred',
