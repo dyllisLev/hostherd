@@ -265,10 +265,20 @@ func connect(ctx context.Context, c config.Config, configPath, version string) e
 		return err
 	}
 	defer ws.Close()
+	parent := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	conn := &connection{ws: ws, c: c, configPath: configPath, streams: map[string]*streamState{}, sentStates: map[string]string{}, settled: map[string]bool{}, wakeup: make(chan struct{}, 1), health: map[string]runnerHealth{}}
-	go func() { <-ctx.Done(); ws.Close() }()
+	// SIGTERM, service stop, and an update restart cancel the parent context.
+	// Send 1001 before dropping TCP; a bare close is recorded as 1006.
+	// Other exits stay abrupt so a fault is not reported as a planned shutdown.
+	go func() {
+		<-ctx.Done()
+		if parent.Err() != nil {
+			_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseGoingAway, "shutdown"), time.Now().Add(time.Second))
+		}
+		_ = ws.Close()
+	}()
 	ws.SetReadLimit(32 << 20)
 	ws.SetReadDeadline(time.Now().Add(60 * time.Second))
 	ws.SetPongHandler(func(string) error { return ws.SetReadDeadline(time.Now().Add(60 * time.Second)) })

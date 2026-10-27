@@ -137,6 +137,55 @@ test('agent disconnect records the close reason', async t => {
   assert.equal(connect?.actor, `agent:${enrolled.serverId}`);
 });
 
+test('a planned agent close is ok and an abnormal drop is an error', async t => {
+  const { app, base, list } = await adminApp(t);
+  const { code } = app.store.enrollment('audit close', 'root');
+  const enrolled = app.store.enroll(code, { hostname: 'audit', os: 'linux', arch: 'amd64', version: '0.1.0', executionUser: 'root' });
+  const hello = JSON.stringify({ type: 'hello', protocol: 1, hostname: 'audit', os: 'linux', arch: 'amd64', version: '0.1.0', user: 'root' });
+  const url = `${base.replace('http:', 'ws:')}/agent`;
+  const headers = { headers: { Authorization: `Bearer ${enrolled.token}` } };
+  const until = async (ready: () => boolean | Promise<boolean>) => {
+    for (let i = 0; i < 50; i++) {
+      if (await ready()) return;
+      await sleep(20);
+    }
+    assert.fail('timed out');
+  };
+  const connect = async () => {
+    const ws = new WebSocket(url, headers);
+    await once(ws, 'open');
+    ws.send(hello);
+    await until(() => app.hub.online(enrolled.serverId));
+    return ws;
+  };
+  const disconnect = async (status: number) => {
+    let found: AuditEvent | undefined;
+    await until(async () => {
+      found = (await list()).items.find(event => event.action === 'agent.disconnect' && event.target === enrolled.serverId && event.status === status);
+      return found !== undefined;
+    });
+    return found!;
+  };
+
+  let ws = await connect();
+  ws.close(1001, 'shutdown');
+  const goingAway = await disconnect(1001);
+  assert.equal(goingAway.result, 'ok');
+  assert.equal(goingAway.detail.reason, 'shutdown');
+
+  ws = await connect();
+  ws.close(1000, 'normal');
+  const normal = await disconnect(1000);
+  assert.equal(normal.result, 'ok');
+  assert.equal(normal.detail.reason, 'normal');
+
+  ws = await connect();
+  ws.terminate();
+  const dropped = await disconnect(1006);
+  assert.equal(dropped.result, 'error');
+  assert.equal(dropped.detail.reason, undefined);
+});
+
 test('audit events are kept for thirty days and detail is truncated without secrets', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'hostherd-audit-retention-'));
   const store = new Store(dir);
