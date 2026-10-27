@@ -73,12 +73,23 @@ export class AgentHub extends EventEmitter {
           }
           case 'state': {
             if (!connection.ready) throw new Error('Agent must send hello first');
-            const job = message.job;
-            if (!job || !['job', 'terminal'].includes(job.kind) || !['running', 'completed', 'failed', 'interrupted'].includes(job.status)) throw new Error('Invalid job state');
-            const previous = this.store.storedJob(serverId, job.id);
-            if (job.error && job.status !== 'running' && previous?.status === job.status && previous?.error === job.error) repeatedFaults.add(`${job.id}: ${job.error}`);
-            this.store.saveJob(serverId, job);
-            this.emit('state', job.id);
+            // A sync sends every changed job in `jobs`. One invalid entry is skipped.
+            const batched = Array.isArray(message.jobs);
+            const jobs = batched ? message.jobs : [message.job];
+            const accepted = [];
+            for (const job of jobs) {
+              if (!job || !['job', 'terminal'].includes(job.kind) || !['running', 'completed', 'failed', 'interrupted'].includes(job.status)) {
+                if (!batched) throw new Error('Invalid job state');
+                continue;
+              }
+              accepted.push(job);
+            }
+            const failed = this.store.saveJobStates(serverId, accepted, (job, previous) => {
+              if (job.error && job.status !== 'running' && previous?.status === job.status && previous?.error === job.error) repeatedFaults.add(`${job.id}: ${job.error}`);
+            });
+            const failedIds = new Set(failed.map(item => item.id));
+            for (const job of accepted) if (!failedIds.has(job.id)) this.emit('state', job.id);
+            if (!batched && failed.length) throw failed[0].error;
             break;
           }
           case 'output': {
