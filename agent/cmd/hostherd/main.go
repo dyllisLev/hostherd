@@ -16,7 +16,7 @@ import (
 	"hostherd/agent/internal/runner"
 )
 
-var version = "0.1.3"
+var version = "0.1.4"
 
 func main() {
 	if err := run(); err != nil {
