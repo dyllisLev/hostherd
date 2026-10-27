@@ -3,9 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
 import { AppError, Store, type Job } from './store.js';
 import type { RequestLogs } from './request-logs.js';
+import type { AuditLog } from './audit.js';
 import { metricsSample, type MetricsStore } from './metrics.js';
 
-interface Connection { socket: WebSocket; ready: boolean; alive: boolean; capabilities: string[] }
+interface Connection { socket: WebSocket; ready: boolean; alive: boolean; capabilities: string[]; disconnectError: string }
 /** One message for SERVER_OFFLINE wherever it is raised. */
 export const OFFLINE_MESSAGE = 'The server is offline. Wait for it to reconnect, then retry.';
 export interface UninstallResult { status: 'accepted' | 'failed'; code?: string; error?: string }
@@ -16,11 +17,11 @@ export class AgentHub extends EventEmitter {
   private pending = new Map<string, Pending>();
   private heartbeat: NodeJS.Timeout;
   private closing = false;
-  constructor(readonly store: Store, readonly requestLogs?: RequestLogs, readonly publicUrl = '', readonly metrics?: MetricsStore) {
+  constructor(readonly store: Store, readonly requestLogs?: RequestLogs, readonly publicUrl = '', readonly metrics?: MetricsStore, readonly audit?: AuditLog) {
     super();
     this.heartbeat = setInterval(() => {
       for (const [id, c] of this.connections) {
-        if (!c.alive) { c.socket.terminate(); continue; }
+        if (!c.alive) { c.disconnectError ||= 'Heartbeat timed out'; c.socket.terminate(); continue; }
         c.alive = false;
         c.socket.ping();
         if (c.ready) this.store.seen(id);
@@ -35,7 +36,7 @@ export class AgentHub extends EventEmitter {
   }
   attach(serverId: string, socket: WebSocket) {
     this.connections.get(serverId)?.socket.close(4001, 'Replaced by a new connection');
-    const connection: Connection = { socket, ready: false, alive: true, capabilities: [] };
+    const connection: Connection = { socket, ready: false, alive: true, capabilities: [], disconnectError: '' };
     this.connections.set(serverId, connection);
     socket.on('pong', () => { connection.alive = true; });
     let sequence = Promise.resolve();
@@ -58,6 +59,7 @@ export class AgentHub extends EventEmitter {
             const metrics = this.metrics && connection.capabilities.includes('metrics');
             socket.send(JSON.stringify({ type: 'welcome', cursors: this.store.cursors(serverId), publicUrl: this.publicUrl, ...(metrics ? { metrics: { intervalMs: this.metrics!.intervalMs } } : {}) }));
             this.metrics?.event(serverId, 'online');
+            this.audit?.connection(serverId, 'agent.connect');
             this.emit('connection', serverId);
             break;
           }
@@ -102,23 +104,30 @@ export class AgentHub extends EventEmitter {
           default: break;
         }
       }).catch(error => {
-        this.store.fault(serverId, error instanceof Error ? error.message : 'Agent communication failed');
+        const message = error instanceof Error ? error.message : 'Agent communication failed';
+        connection.disconnectError ||= message;
+        this.store.fault(serverId, message);
         socket.close(1011, 'Agent protocol or storage error');
       });
     });
-    socket.on('error', () => {});
-    socket.on('close', () => {
-      if (this.connections.get(serverId) !== connection) return;
-      this.connections.delete(serverId);
-      // A central shutdown is not the server going offline.
-      if (connection.ready && !this.closing) this.metrics?.event(serverId, 'offline');
-      for (const [id, p] of this.pending) {
-        if (p.serverId === serverId) {
-          clearTimeout(p.timer); this.pending.delete(id);
-          p.reject(new AppError('EXECUTION_UNKNOWN', 'No confirmed response from the server; the request may or may not have run. Check the job status with the same job ID before retrying.', 503));
+    socket.on('error', error => { connection.disconnectError ||= error instanceof Error ? error.message : 'socket error'; });
+    socket.on('close', (code, reason) => {
+      const current = this.connections.get(serverId) === connection;
+      if (current) {
+        this.connections.delete(serverId);
+        // A central shutdown is not the server going offline.
+        if (connection.ready && !this.closing) this.metrics?.event(serverId, 'offline');
+        for (const [id, p] of this.pending) {
+          if (p.serverId === serverId) {
+            clearTimeout(p.timer); this.pending.delete(id);
+            p.reject(new AppError('EXECUTION_UNKNOWN', 'No confirmed response from the server; the request may or may not have run. Check the job status with the same job ID before retrying.', 503));
+          }
         }
+        this.emit('connection', serverId);
       }
-      this.emit('connection', serverId);
+      if (this.closing) return;
+      const framed = reason?.byteLength ? reason.toString('utf8') : '';
+      this.audit?.connection(serverId, 'agent.disconnect', code, connection.disconnectError || framed);
     });
   }
   async rpc<T = unknown>(serverId: string, method: string, params: unknown, timeoutMs = 30_000): Promise<T> {

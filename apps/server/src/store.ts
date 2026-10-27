@@ -42,6 +42,22 @@ const MIGRATIONS: ((db: Database.Database) => void)[] = [
     const columns = new Set((db.prepare('PRAGMA table_info(jobs)').all() as { name: string }[]).map(c => c.name));
     if (!columns.has('label')) db.exec('ALTER TABLE jobs ADD COLUMN label TEXT');
   },
+  // Administrator writes and agent connect/disconnect. Detail is small JSON and must not hold secrets.
+  db => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS audit_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        action TEXT NOT NULL,
+        target TEXT,
+        result TEXT NOT NULL CHECK (result IN ('ok', 'error')),
+        status INTEGER,
+        detail TEXT
+      );
+      CREATE INDEX IF NOT EXISTS audit_events_at ON audit_events(at);
+    `);
+  },
 ];
 
 /** Emits 'servers' when server records change and 'job' (id, serverId) when a job state is stored. */
