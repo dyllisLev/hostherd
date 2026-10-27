@@ -324,7 +324,12 @@ export async function createApp(options: AppOptions) {
     res.status(status).json({ error: error.message, code: error.code, ...(error.params ? { params: error.params } : {}) });
   };
   app.use(errorHandler);
+  // Node's 5s keep-alive closes idle sockets a reverse proxy still reuses (502/521); headersTimeout stays higher.
+  const KEEP_ALIVE_TIMEOUT_MS = 65_000;
+  const HEADERS_TIMEOUT_MS = 66_000;
   const server = createServer(app);
+  server.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS;
+  server.headersTimeout = HEADERS_TIMEOUT_MS;
   // One image RPC carries up to 8 MiB encoded as base64, plus JSON metadata.
   const agentSockets = new WebSocketServer({ noServer: true, maxPayload: 12 * 1024 * 1024 });
   const terminalSockets = new WebSocketServer({ noServer: true, maxPayload: 128 * 1024 });
