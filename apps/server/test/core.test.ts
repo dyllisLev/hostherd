@@ -281,7 +281,8 @@ test('schema migration backfills job status and start time of an existing databa
     original.prepare(`INSERT INTO jobs (id,server_id,kind,state) VALUES ('first-job','s','job',?)`).run(JSON.stringify({ id: 'first-job', kind: 'job', path: '/', cmd: 'uptime', status: 'failed', startedAt }));
     original.close();
     let store = new Store(dir);
-    assert.equal(store.db.pragma('user_version', { simple: true }), 2);
+    assert.equal(store.db.pragma('user_version', { simple: true }), 3);
+    assert.ok(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_events'").get());
     assert.deepEqual(store.jobPage({ status: 'failed', limit: 10, offset: 0 }).items.map(job => job.id), ['first-job']);
     store.close(); store = new Store(dir);
     assert.equal(store.jobPage({ q: 'UPTIME', limit: 10, offset: 0 }).total, 1);

@@ -6,6 +6,7 @@ import type Database from 'better-sqlite3';
 import express, { type Request, type RequestHandler, type Response } from 'express';
 import Provider, { errors, type Configuration } from 'oidc-provider';
 import { createOAuthAdapter } from './oauth-adapter.js';
+import { watchAdminWrite, type AuditLog } from './audit.js';
 
 const SESSION_COOKIE = 'hostherd_session';
 const SESSION_SECONDS = 7 * 24 * 60 * 60;
@@ -74,8 +75,8 @@ export function loginKey(req: Pick<Request, 'ip' | 'socket'>): string {
   return groups.slice(0, 4).map(group => parseInt(group, 16).toString(16)).join(':') + '::/64';
 }
 
-export async function createAuth({ db, app, publicUrl, dataDir }: {
-  db: Database.Database; app: express.Express; publicUrl: string; dataDir: string;
+export async function createAuth({ db, app, publicUrl, dataDir, audit }: {
+  db: Database.Database; app: express.Express; publicUrl: string; dataDir: string; audit?: AuditLog;
 }): Promise<{
   requireAdmin: RequestHandler;
   authenticateMcp: (token: string) => Promise<TokenIdentity | null>;
@@ -145,7 +146,10 @@ export async function createAuth({ db, app, publicUrl, dataDir }: {
     next();
   };
   const requireAdmin: RequestHandler = (req, res, next) => {
-    if (!session(req)) { fail(res, 401, 'LOGIN_REQUIRED', 'Administrator login is required.'); return; }
+    const current = session(req);
+    if (!current) { fail(res, 401, 'LOGIN_REQUIRED', 'Administrator login is required.'); return; }
+    // The administrator row is fixed at id 1.
+    if (audit) watchAdminWrite(audit, `admin:1:${current.username}`, req, res);
     protectWrite(req, res, next);
   };
   const failures = new Map<string, { count: number; until: number }>();

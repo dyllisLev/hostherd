@@ -12,6 +12,7 @@ import { createAuth } from './auth.js';
 import { mountMcp } from './mcp.js';
 import { FileTransfers } from './transfers.js';
 import { RequestLogs, redactText } from './request-logs.js';
+import { AuditLog } from './audit.js';
 import { VERSION } from './version.js';
 import { ABSOLUTE_PATH, executionUser } from './validation.js';
 import { MetricsStore, RANGES, type Range } from './metrics.js';
@@ -35,8 +36,9 @@ export async function createApp(options: AppOptions) {
   const publicUrl = options.publicUrl.replace(/\/$/, '');
   const store = new Store(options.dataDir);
   const requestLogs = new RequestLogs(store);
+  const audit = new AuditLog(store);
   const metrics = new MetricsStore(options.dataDir, options.metricsIntervalMs);
-  const hub = new AgentHub(store, requestLogs, publicUrl, metrics);
+  const hub = new AgentHub(store, requestLogs, publicUrl, metrics, audit);
   const approvals = new Approvals(store);
   const notifier = new Notifier(store, hub, approvals, publicUrl);
   // Each web event stream and terminal socket adds a listener.
@@ -52,7 +54,7 @@ export async function createApp(options: AppOptions) {
     if (req.path.startsWith('/api/') || req.path.startsWith('/oauth')) res.setHeader('Cache-Control', 'no-store');
     next();
   });
-  const auth = await createAuth({ db: store.db, app, publicUrl, dataDir: options.dataDir });
+  const auth = await createAuth({ db: store.db, app, publicUrl, dataDir: options.dataDir, audit });
   app.use(express.json({ limit: '4mb' }));
   app.get('/healthz', (_req, res) => {
     store.db.prepare('SELECT 1').get();
@@ -92,6 +94,13 @@ export async function createApp(options: AppOptions) {
     res.json(requestLogs.list({ ...filters, from: filters.from ? new Date(filters.from).toISOString() : undefined, to: filters.to ? new Date(filters.to).toISOString() : undefined }));
   });
   app.get('/api/request-logs/:traceId', (req, res) => res.json(requestLogs.detail(uuid.parse(req.params.traceId))));
+  app.get('/api/audit-events', (req, res) => {
+    const query = z.object({
+      cursor: z.string().regex(/^[1-9][0-9]*$/).refine(value => Number.isSafeInteger(Number(value))).optional(),
+      limit: z.coerce.number().int().min(1).max(200).default(50),
+    }).parse(req.query);
+    res.json(audit.list(query.limit, query.cursor ? Number(query.cursor) : undefined));
+  });
   app.get('/api/dashboard', (req, res) => {
     const { days, tzOffset } = z.object({
       days: z.coerce.number().int().min(1).max(30).default(14),
@@ -377,13 +386,13 @@ export async function createApp(options: AppOptions) {
     } catch { socket.destroy(); }
   });
   const cleanup = setInterval(() => {
-    requestLogs.cleanup(); metrics.cleanup(); approvals.cleanup();
+    requestLogs.cleanup(); metrics.cleanup(); approvals.cleanup(); audit.cleanup();
     void store.cleanup().catch(error => console.error('Retention cleanup failed:', error.message));
   }, 3600_000);
   cleanup.unref();
   const rollup = setInterval(() => { try { metrics.rollup(); } catch (error) { console.error('Metrics rollup failed:', error instanceof Error ? error.message : error); } }, 300_000);
   rollup.unref();
-  return { app, server, store, hub, auth, transfers, requestLogs, metrics, approvals, notifier, async close() {
+  return { app, server, store, hub, auth, transfers, requestLogs, audit, metrics, approvals, notifier, async close() {
     clearInterval(cleanup); clearInterval(rollup); notifier.close(); await transfers.close(); hub.close();
     for (const res of eventStreams) res.end();
     for (const ws of terminalSockets.clients) ws.close(1001, 'Central restarting');
