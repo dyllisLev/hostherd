@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"hostherd/agent/internal/config"
 	"os"
@@ -45,11 +46,63 @@ func (i *installer) reloadServices(ctx context.Context) ([]byte, error) {
 	}
 	return i.run(ctx, "systemctl", "daemon-reload")
 }
+
+// On macOS the runner is a LaunchAgent in the execution user's login session
+// (gui/<uid>), so its commands can reach that user's TCC-protected data and
+// GUI services. The communication agent stays a root LaunchDaemon.
+func (i *installer) isRunner(unit string) bool { return i.launchd && unit != agentUnit }
+func (i *installer) serviceDir(unit string) string {
+	if i.isRunner(unit) {
+		return i.runnerDir
+	}
+	return i.unitDir
+}
+func (i *installer) servicePath(unit string) string {
+	return filepath.Join(i.serviceDir(unit), i.serviceFile(unit))
+}
+func (i *installer) launchdDomain(unit string) string {
+	if i.isRunner(unit) {
+		return i.runnerDomain
+	}
+	return "system"
+}
+
+// removeService deletes the unit file. A runner installed before the move to
+// login sessions also left a plist under LaunchDaemons.
+func (i *installer) removeService(unit string) error {
+	paths := []string{i.servicePath(unit)}
+	if i.isRunner(unit) {
+		paths = append(paths, filepath.Join(i.unitDir, i.serviceFile(unit)))
+	}
+	var failures []error
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+// bindAccount selects the macOS login session and LaunchAgents directory of
+// the enrolled execution user. It does nothing on Linux.
+func (i *installer) bindAccount(name string) error {
+	if !i.launchd {
+		return nil
+	}
+	u, err := lookupSystemAccount(name)
+	if err != nil {
+		return err
+	}
+	i.runnerDir = filepath.Join(u.HomeDir, "Library", "LaunchAgents")
+	i.runnerDomain = "gui/" + u.Uid
+	return nil
+}
 func (i *installer) startService(ctx context.Context, unit string) ([]byte, error) {
 	if !i.launchd {
 		return i.run(ctx, "systemctl", "enable", "--now", unit)
 	}
-	target := "system/" + launchdLabel(unit)
+	domain := i.launchdDomain(unit)
+	target := domain + "/" + launchdLabel(unit)
 	// Never restart a reused generation: it may already own live work.
 	if b, err := i.run(ctx, "/bin/launchctl", "print", target); err == nil {
 		if _, err := launchdPID(b); err == nil {
@@ -59,14 +112,24 @@ func (i *installer) startService(ctx context.Context, unit string) ([]byte, erro
 		// kickstart also preserves a process that started after the probe.
 		return i.run(ctx, "/bin/launchctl", "kickstart", target)
 	}
+	if i.isRunner(unit) {
+		if _, err := i.run(ctx, "/bin/launchctl", "print", domain); err != nil {
+			return nil, fmt.Errorf("no login session for the execution user; sign in to the Mac (automatic login keeps it available) and retry: %w", err)
+		}
+	}
 	if _, err := i.run(ctx, "/bin/launchctl", "enable", target); err != nil {
 		return nil, err
 	}
-	return i.run(ctx, "/bin/launchctl", "bootstrap", "system", filepath.Join(i.unitDir, i.serviceFile(unit)))
+	return i.run(ctx, "/bin/launchctl", "bootstrap", domain, i.servicePath(unit))
 }
 func (i *installer) stopService(ctx context.Context, unit string) ([]byte, error) {
 	if i.launchd {
-		return i.run(ctx, "/bin/launchctl", "bootout", "system/"+launchdLabel(unit))
+		b, err := i.run(ctx, "/bin/launchctl", "bootout", i.launchdDomain(unit)+"/"+launchdLabel(unit))
+		if err != nil && i.isRunner(unit) {
+			// A runner started before the move to login sessions is a system job.
+			return i.run(ctx, "/bin/launchctl", "bootout", "system/"+launchdLabel(unit))
+		}
+		return b, err
 	}
 	return i.run(ctx, "systemctl", "stop", unit)
 }
@@ -132,18 +195,28 @@ func plistString(value string) string {
 	xml.EscapeText(&b, []byte(value))
 	return "<string>" + b.String() + "</string>"
 }
-func launchdPlist(label string, args []string, username, group, home string, umask int, keepAlive string) string {
+
+// launchdPlist describes a job. A session job is a LaunchAgent that launchd runs
+// as the logged-in user, so it names no UserName, GroupName or InitGroups.
+func launchdPlist(label string, args []string, username, group, home string, umask int, keepAlive string, session bool) string {
 	var b strings.Builder
 	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>Label</key>" + plistString(label) + "\n<key>ProgramArguments</key><array>")
 	for _, arg := range args {
 		b.WriteString(plistString(arg))
 	}
-	b.WriteString("</array>\n<key>UserName</key>" + plistString(username))
-	if group != "" {
-		b.WriteString("\n<key>GroupName</key>" + plistString(group))
+	b.WriteString("</array>")
+	if session {
+		b.WriteString("\n<key>LimitLoadToSessionType</key><string>Aqua</string>")
+	} else {
+		b.WriteString("\n<key>UserName</key>" + plistString(username))
+		if group != "" {
+			b.WriteString("\n<key>GroupName</key>" + plistString(group))
+		}
+		if home != "" {
+			b.WriteString("\n<key>InitGroups</key><true/>")
+		}
 	}
 	if home != "" {
-		b.WriteString("\n<key>InitGroups</key><true/>")
 		b.WriteString("\n<key>WorkingDirectory</key>" + plistString(home))
 	}
 	b.WriteString("\n<key>RunAtLoad</key><true/>\n<key>Umask</key><integer>" + strconv.Itoa(umask) + "</integer>\n<key>ExitTimeOut</key><integer>30</integer>\n")
@@ -167,7 +240,22 @@ func (i *installer) writeLaunchdRunner(c config.Config, binary string) error {
 	if err != nil {
 		return err
 	}
-	return i.writeUnit(i.serviceFile(runnerUnit(c.Generation)), launchdPlist(launchdLabel(runnerUnit(c.Generation)), []string{binary, "runner", "--state-dir", c.StateDir, "--generation", c.Generation}, u.Username, u.GroupName, u.HomeDir, 0o22, "<dict><key>SuccessfulExit</key><false/></dict>"))
+	// The user owns LaunchAgents; create the directory for them when missing.
+	if _, err := os.Stat(i.runnerDir); os.IsNotExist(err) {
+		uid, uidErr := strconv.Atoi(u.Uid)
+		gid, gidErr := strconv.Atoi(u.Gid)
+		if err := errors.Join(uidErr, gidErr); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(i.runnerDir, 0755); err != nil {
+			return err
+		}
+		if err := os.Chown(i.runnerDir, uid, gid); err != nil {
+			return err
+		}
+	}
+	plist := launchdPlist(launchdLabel(runnerUnit(c.Generation)), []string{binary, "runner", "--state-dir", c.StateDir, "--generation", c.Generation}, u.Username, u.GroupName, u.HomeDir, 0o22, "<dict><key>SuccessfulExit</key><false/></dict>", true)
+	return i.writeUnitIn(i.runnerDir, i.serviceFile(runnerUnit(c.Generation)), plist)
 }
 func (i *installer) startLaunchdUpdate(ctx context.Context, binary, path, manifest string) error {
 	return i.startLaunchdOneShot(ctx, updaterLabel, []string{binary, "update", "--config", path, "--manifest-url", manifest}, path, "another agent update is running")
@@ -196,7 +284,7 @@ func (i *installer) startLaunchdOneShot(ctx context.Context, label string, args 
 		return err
 	}
 	defer os.Remove(f.Name())
-	_, err = f.WriteString(launchdPlist(label, args, "root", "", "", 0o77, ""))
+	_, err = f.WriteString(launchdPlist(label, args, "root", "", "", 0o77, "", false))
 	closeErr := f.Close()
 	if err != nil {
 		return err

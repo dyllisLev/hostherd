@@ -28,12 +28,15 @@ const defaultStateDir = "/var/lib/hostherd/runtime"
 var defaultUnitDir = serviceUnitDir()
 
 type installer struct {
-	launchd     bool
-	client      *http.Client
-	unitDir     string
-	run         func(context.Context, string, ...string) ([]byte, error)
-	runnerReady func(context.Context, config.Config) error
-	agentReady  func(context.Context, config.Config) error
+	launchd bool
+	client  *http.Client
+	unitDir string
+	// runnerDir and runnerDomain locate the macOS runner LaunchAgent; see bindAccount.
+	runnerDir    string
+	runnerDomain string
+	run          func(context.Context, string, ...string) ([]byte, error)
+	runnerReady  func(context.Context, config.Config) error
+	agentReady   func(context.Context, config.Config) error
 }
 
 func newInstaller() *installer {
@@ -52,6 +55,12 @@ func newInstaller() *installer {
 	i.runnerReady = waitRunner
 	i.agentReady = i.waitAgent
 	return i
+}
+
+// installerFor is newInstaller bound to the enrolled execution account.
+func installerFor(account string) (*installer, error) {
+	i := newInstaller()
+	return i, i.bindAccount(account)
 }
 
 func requireSystem() error {
@@ -109,7 +118,10 @@ func Install(ctx context.Context, serverURL, code, binaryPath string, options Op
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	i := newInstaller()
+	i, err := installerFor(executionAccount.Username)
+	if err != nil {
+		return err
+	}
 	serverURL = strings.TrimRight(serverURL, "/")
 	pub, err := i.get(ctx, serverURL+"/downloads/release.pub", 16384)
 	if err != nil {
@@ -283,7 +295,11 @@ func Uninstall(ctx context.Context, configPath string) error {
 	if err = waitReply(ctx); err != nil {
 		return err
 	}
-	return newInstaller().uninstall(ctx, configPath, c)
+	i, err := installerFor(c.ExecutionUser)
+	if err != nil {
+		return err
+	}
+	return i.uninstall(ctx, configPath, c)
 }
 
 func (i *installer) uninstall(ctx context.Context, configPath string, c config.Config) error {
@@ -291,23 +307,35 @@ func (i *installer) uninstall(ctx context.Context, configPath string, c config.C
 	// The communication service goes first so it cannot restart a runner or
 	// reconnect while the rest is removed.
 	units := []string{agentUnit}
-	matches, err := filepath.Glob(filepath.Join(i.unitDir, i.serviceFile(runnerUnit("*"))))
-	if err != nil {
-		return err
+	// A macOS runner plist is in the user's LaunchAgents, or in LaunchDaemons
+	// when it was installed before runners moved to the login session.
+	dirs := []string{i.unitDir}
+	if i.launchd {
+		dirs = append(dirs, i.runnerDir)
 	}
-	for _, match := range matches {
-		generation := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(match), "hostherd-runner-"), ".service")
-		if i.launchd {
-			generation = strings.TrimSuffix(strings.TrimPrefix(filepath.Base(match), "io.hostherd.runner."), ".plist")
+	seen := map[string]bool{}
+	for _, dir := range dirs {
+		matches, err := filepath.Glob(filepath.Join(dir, i.serviceFile(runnerUnit("*"))))
+		if err != nil {
+			return err
 		}
-		units = append(units, runnerUnit(generation))
+		for _, match := range matches {
+			generation := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(match), "hostherd-runner-"), ".service")
+			if i.launchd {
+				generation = strings.TrimSuffix(strings.TrimPrefix(filepath.Base(match), "io.hostherd.runner."), ".plist")
+			}
+			if !seen[generation] {
+				seen[generation] = true
+				units = append(units, runnerUnit(generation))
+			}
+		}
 	}
 	var failures []error
 	for _, unit := range units {
 		// Stopping fails for a unit that is not loaded; deleting it still matters.
 		i.stopService(ctx, unit)
 		i.disableService(ctx, unit)
-		if err := os.Remove(filepath.Join(i.unitDir, i.serviceFile(unit))); err != nil && !os.IsNotExist(err) {
+		if err := i.removeService(unit); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -353,7 +381,10 @@ func Update(ctx context.Context, configPath, manifestURL string) error {
 	if err != nil {
 		return err
 	}
-	i := newInstaller()
+	i, err := installerFor(c.ExecutionUser)
+	if err != nil {
+		return err
+	}
 	data, err := i.get(ctx, manifestURL, 1<<20)
 	if err != nil {
 		return err
@@ -420,7 +451,11 @@ func CleanupRunners(ctx context.Context, c config.Config) error {
 		return nil // The updater owns staging and activation while holding this lock.
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-	return newInstaller().cleanup(ctx, c)
+	i, err := installerFor(c.ExecutionUser)
+	if err != nil {
+		return err
+	}
+	return i.cleanup(ctx, c)
 }
 
 func (i *installer) cleanup(ctx context.Context, c config.Config) error {
@@ -478,10 +513,7 @@ func (i *installer) retireRunnerUnits(ctx context.Context, generation string) er
 	if _, err := i.disableService(ctx, unit); err != nil {
 		return err
 	}
-	if err := os.Remove(filepath.Join(i.unitDir, i.serviceFile(unit))); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
+	return i.removeService(unit)
 }
 
 func (i *installer) activate(ctx context.Context, configPath string, previous, next config.Config, binaryPath string) error {
@@ -767,7 +799,7 @@ func (i *installer) writeAgentUnit(c config.Config, configPath string) error {
 // stop (systemctl stop, launchctl bootout) still keeps it stopped.
 func (i *installer) agentDefinition(c config.Config, configPath string) (string, error) {
 	if i.launchd {
-		return launchdPlist(agentLabel, []string{filepath.Join(c.InstallDir, "current"), "agent", "--config", configPath}, "root", "", "", 0o77, "<true/>"), nil
+		return launchdPlist(agentLabel, []string{filepath.Join(c.InstallDir, "current"), "agent", "--config", configPath}, "root", "", "", 0o77, "<true/>", false), nil
 	}
 	binary, err := systemdQuote(filepath.Join(c.InstallDir, "current"))
 	if err != nil {
@@ -781,10 +813,14 @@ func (i *installer) agentDefinition(c config.Config, configPath string) (string,
 }
 
 func (i *installer) writeUnit(name, body string) error {
-	if err := os.MkdirAll(i.unitDir, 0755); err != nil {
+	return i.writeUnitIn(i.unitDir, name, body)
+}
+
+func (i *installer) writeUnitIn(dir, name, body string) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(i.unitDir, ".unit-*")
+	f, err := os.CreateTemp(dir, ".unit-*")
 	if err != nil {
 		return err
 	}
@@ -802,10 +838,10 @@ func (i *installer) writeUnit(name, body string) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	if err = os.Rename(f.Name(), filepath.Join(i.unitDir, name)); err != nil {
+	if err = os.Rename(f.Name(), filepath.Join(dir, name)); err != nil {
 		return err
 	}
-	return syncDir(i.unitDir)
+	return syncDir(dir)
 }
 
 func (i *installer) waitAgent(ctx context.Context, c config.Config) error {

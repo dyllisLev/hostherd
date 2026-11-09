@@ -112,15 +112,19 @@ installation command. The bootstrap selects Homebrew OpenSSL at
 exists. It requires Ed25519 verification and uses OpenSSL for SHA256 too, so GNU
 coreutils are not required. Installed Go processes need no Homebrew runtime.
 
-The config, release and runtime paths above also apply to macOS. Service plists
-are `/Library/LaunchDaemons/io.hostherd.agent.plist` and
-`/Library/LaunchDaemons/io.hostherd.runner.VERSION.plist`. The communication daemon
-runs as root; runners use the enrolled account and its home directory. A launchd
+The config, release and runtime paths above also apply to macOS. The communication
+plist is `/Library/LaunchDaemons/io.hostherd.agent.plist`. Each runner is a LaunchAgent,
+`~/Library/LaunchAgents/io.hostherd.runner.VERSION.plist` of the enrolled account,
+loaded in that user's login session (`gui/<uid>`) so commands reach the user's
+protected data and GUI services. It starts at login; without a login session an
+install or update stops with an error and leaves the running runner alone. Turn on
+automatic login for a Mac that restarts unattended. The communication daemon runs as
+root; runners run as the enrolled account in its home directory. A launchd
 update job runs independently of both. Only the communication daemon restarts
 during activation/rollback; busy runners of previous generations remain registered.
 
 For diagnosis, use `sudo launchctl print system/io.hostherd.agent` and
-`sudo launchctl print system/io.hostherd.runner.VERSION`. Restart only communication
+`launchctl print gui/$(id -u)/io.hostherd.runner.VERSION`. Restart only communication
 with `sudo launchctl kickstart -k system/io.hostherd.agent`. Do not boot out a busy
 runner. macOS privacy controls still apply to protected folders; allow the runner
 executable access in System Settings when needed. Sleep can suspend connectivity
