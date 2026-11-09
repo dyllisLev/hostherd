@@ -27,15 +27,23 @@ func TestUninstallStopsEveryServiceAndRemovesTheInstallation(t *testing.T) {
 				t.Fatal(err)
 			}
 			var commands []string
-			i := &installer{launchd: launchd, unitDir: filepath.Join(root, "units"), run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			i := &installer{launchd: launchd, unitDir: filepath.Join(root, "units"), runnerDir: filepath.Join(root, "agents"), runnerDomain: "gui/501", run: func(_ context.Context, name string, args ...string) ([]byte, error) {
 				commands = append(commands, name+" "+strings.Join(args, " "))
 				return nil, nil
 			}}
 			units := []string{agentUnit, runnerUnit("1.0.0"), runnerUnit("1.1.0")}
 			for _, unit := range units {
-				if err := i.writeUnit(i.serviceFile(unit), "unit"); err != nil {
+				if err := i.writeUnitIn(i.serviceDir(unit), i.serviceFile(unit), "unit"); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if launchd {
+				// A runner installed before runners moved to the login session.
+				legacy := runnerUnit("0.9.0")
+				if err := i.writeUnit(i.serviceFile(legacy), "unit"); err != nil {
+					t.Fatal(err)
+				}
+				units = append(units, legacy)
 			}
 			unrelated := filepath.Join(i.unitDir, "other.service")
 			if err := os.WriteFile(unrelated, nil, 0644); err != nil {
@@ -45,12 +53,14 @@ func TestUninstallStopsEveryServiceAndRemovesTheInstallation(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, unit := range units {
-				if _, err := os.Lstat(filepath.Join(i.unitDir, i.serviceFile(unit))); !os.IsNotExist(err) {
-					t.Fatalf("%s remains: %v", unit, err)
+				for _, dir := range []string{i.unitDir, i.runnerDir} {
+					if _, err := os.Lstat(filepath.Join(dir, i.serviceFile(unit))); !os.IsNotExist(err) {
+						t.Fatalf("%s remains in %s: %v", unit, dir, err)
+					}
 				}
 				stop := "systemctl stop " + unit
 				if launchd {
-					stop = "/bin/launchctl bootout system/" + launchdLabel(unit)
+					stop = "/bin/launchctl bootout " + i.launchdDomain(unit) + "/" + launchdLabel(unit)
 				}
 				if !strings.Contains(strings.Join(commands, "\n"), stop) {
 					t.Fatalf("%s was not stopped:\n%s", unit, strings.Join(commands, "\n"))

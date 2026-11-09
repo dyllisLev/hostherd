@@ -46,9 +46,9 @@ func TestLaunchdActivationPreservesGenerationsAndRollsBack(t *testing.T) {
 			next := previous
 			next.Version, next.Generation = "1.1.0", "1.1.0"
 			var commands []string
-			i := &installer{launchd: true, unitDir: t.TempDir(), run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			i := &installer{launchd: true, unitDir: t.TempDir(), runnerDir: t.TempDir(), runnerDomain: "gui/501", run: func(_ context.Context, name string, args ...string) ([]byte, error) {
 				commands = append(commands, name+" "+strings.Join(args, " "))
-				if args[0] == "print" && args[1] != "system/"+agentLabel {
+				if args[0] == "print" && args[1] != "system/"+agentLabel && args[1] != "gui/501" {
 					return nil, fmt.Errorf("not loaded")
 				}
 				return nil, nil
@@ -104,7 +104,7 @@ func TestLaunchdActivationPreservesGenerationsAndRollsBack(t *testing.T) {
 }
 func TestLaunchdPlistUsesRealAccountAndEscapedArguments(t *testing.T) {
 	c, path := launchdTestConfig(t)
-	i := &installer{launchd: true, unitDir: t.TempDir()}
+	i := &installer{launchd: true, unitDir: t.TempDir(), runnerDir: filepath.Join(t.TempDir(), "LaunchAgents"), runnerDomain: "gui/501"}
 	binary := filepath.Join(c.InstallDir, "a & b <c>")
 	if err := i.writeRunnerUnit(c, binary); err != nil {
 		t.Fatal(err)
@@ -112,7 +112,7 @@ func TestLaunchdPlistUsesRealAccountAndEscapedArguments(t *testing.T) {
 	if err := i.writeAgentUnit(c, path); err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile(filepath.Join(i.unitDir, i.serviceFile(runnerUnit(c.Generation))))
+	b, err := os.ReadFile(i.servicePath(runnerUnit(c.Generation)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,8 +141,13 @@ func TestLaunchdPlistUsesRealAccountAndEscapedArguments(t *testing.T) {
 		}
 	}
 	u, _ := user.Current()
-	group, _ := user.LookupGroupId(u.Gid)
-	for _, part := range []string{"<key>UserName</key>" + plistString(u.Username), "<key>GroupName</key>" + plistString(group.Name), "<key>InitGroups</key><true/>", "<key>HOME</key>" + plistString(u.HomeDir), plistString(binary), "/opt/homebrew/bin:/opt/homebrew/sbin:", "<key>AbandonProcessGroup</key><true/>", "<key>Umask</key><integer>18</integer>", "<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>"} {
+	// A LaunchAgent runs as the logged-in user; launchd rejects identity keys.
+	for _, key := range []string{"<key>UserName</key>", "<key>GroupName</key>", "<key>InitGroups</key>"} {
+		if strings.Contains(string(b), key) {
+			t.Fatalf("runner LaunchAgent must not set %s", key)
+		}
+	}
+	for _, part := range []string{"<key>LimitLoadToSessionType</key><string>Aqua</string>", "<key>USER</key>" + plistString(u.Username), "<key>HOME</key>" + plistString(u.HomeDir), plistString(binary), "/opt/homebrew/bin:/opt/homebrew/sbin:", "<key>AbandonProcessGroup</key><true/>", "<key>Umask</key><integer>18</integer>", "<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>"} {
 		if !strings.Contains(string(b), part) {
 			t.Fatalf("missing %s", part)
 		}
@@ -163,7 +168,7 @@ func TestLaunchdCleanupOnlyBootsOutOlderIdleRunner(t *testing.T) {
 	}
 	defer os.RemoveAll(state)
 	c.StateDir = state
-	i := &installer{launchd: true, unitDir: t.TempDir()}
+	i := &installer{launchd: true, unitDir: t.TempDir(), runnerDir: t.TempDir(), runnerDomain: "gui/501"}
 	var commands []string
 	i.run = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		commands = append(commands, name+" "+strings.Join(args, " "))
@@ -190,7 +195,7 @@ func TestLaunchdCleanupOnlyBootsOutOlderIdleRunner(t *testing.T) {
 	if err := i.cleanup(context.Background(), c); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(commands, "\n") != "/bin/launchctl bootout system/io.hostherd.runner.1.0.0" {
+	if strings.Join(commands, "\n") != "/bin/launchctl bootout gui/501/io.hostherd.runner.1.0.0" {
 		t.Fatalf("commands %v", commands)
 	}
 	if _, err := os.Stat(filepath.Join(c.InstallDir, "releases", "1.0.0")); !os.IsNotExist(err) {
@@ -266,7 +271,7 @@ func TestLaunchdUpdateIsIndependentAndDoesNotRestartOnFailure(t *testing.T) {
 func TestLaunchdStartReusesLiveRunnerAndRetriesInactiveCandidate(t *testing.T) {
 	for _, running := range []bool{false, true} {
 		var commands []string
-		i := &installer{launchd: true, run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		i := &installer{launchd: true, runnerDomain: "gui/501", run: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			commands = append(commands, strings.Join(args, " "))
 			pid := ""
 			if running {
@@ -284,8 +289,24 @@ func TestLaunchdStartReusesLiveRunnerAndRetriesInactiveCandidate(t *testing.T) {
 		if len(commands) != want {
 			t.Fatalf("commands %v", commands)
 		}
-		if !running && commands[1] != "kickstart system/io.hostherd.runner.1.1.0" {
+		if !running && commands[1] != "kickstart gui/501/io.hostherd.runner.1.1.0" {
 			t.Fatalf("unsafe retry: %v", commands)
+		}
+	}
+}
+
+func TestLaunchdRunnerNeedsLoginSession(t *testing.T) {
+	var commands []string
+	i := &installer{launchd: true, runnerDomain: "gui/501", run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		commands = append(commands, strings.Join(args, " "))
+		return nil, fmt.Errorf("not loaded")
+	}}
+	if _, err := i.startService(context.Background(), runnerUnit("1.1.0")); err == nil || !strings.Contains(err.Error(), "login session") {
+		t.Fatalf("error %v", err)
+	}
+	for _, command := range commands {
+		if strings.HasPrefix(command, "bootstrap") || strings.HasPrefix(command, "enable") {
+			t.Fatalf("started without a session: %v", commands)
 		}
 	}
 }

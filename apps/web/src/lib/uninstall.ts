@@ -10,7 +10,9 @@ export function manualUninstallCommand(os: string): string {
   ].join('\n');
   if (os === 'darwin') return [
     'sudo launchctl bootout system/io.hostherd.agent',
+    'for f in ~/Library/LaunchAgents/io.hostherd.runner.*.plist; do launchctl bootout "gui/$(id -u)/$(basename "$f" .plist)"; done',
     'for f in /Library/LaunchDaemons/io.hostherd.runner.*.plist; do sudo launchctl bootout "system/$(basename "$f" .plist)"; done',
+    'rm -f ~/Library/LaunchAgents/io.hostherd.runner.*.plist',
     'sudo rm -f /Library/LaunchDaemons/io.hostherd.agent.plist /Library/LaunchDaemons/io.hostherd.runner.*.plist',
     'sudo rm -rf /etc/hostherd /var/lib/hostherd /opt/hostherd',
   ].join('\n');
