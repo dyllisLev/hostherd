@@ -1,7 +1,7 @@
 import { ChevronLeft, ChevronRight, TerminalSquare } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { formatNumber, t } from '../i18n';
-import { Link } from '../lib/router';
+import { Link, navigate } from '../lib/router';
 import { formatDuration } from '../lib/time';
 import type { Job } from '../lib/types';
 import { cn } from '../lib/utils';
@@ -18,11 +18,11 @@ export function JobTable({ jobs, showServer = true, empty }: { jobs: Job[]; show
   return <>
     <div className="hidden overflow-x-auto md:block"><table className="data-table">
       <thead><tr><th>{t('jobs.command')}</th>{showServer && <th>{t('jobs.server')}</th>}<th>{t('jobs.status')}</th><th>{t('jobs.started')}</th><th>{t('jobs.duration')}</th><th>{t('jobs.exitCode')}</th></tr></thead>
-      <tbody>{jobs.map(job => <tr key={job.id} className="relative">
-        <td className="max-w-[420px]"><Link className="block truncate font-mono text-xs font-medium after:absolute after:inset-0 hover:underline" href={href(job)} title={job.cmd}>{job.cmd || t('jobs.terminalSession')}</Link><div className="mt-1 truncate font-mono text-xs text-muted-foreground">{job.path}</div></td>
+      <tbody>{jobs.map(job => <tr key={job.id} className="cursor-pointer" onClick={event => { if (!(event.target as HTMLElement).closest('a,button')) navigate(href(job)); }}>
+        <td className="max-w-[420px]"><Link className="block truncate font-mono text-xs font-medium hover:underline" href={href(job)} title={job.cmd}>{job.cmd || t('jobs.terminalSession')}</Link><div className="mt-1 truncate font-mono text-xs text-muted-foreground">{job.path}</div></td>
         {showServer && <td className="whitespace-nowrap">{job.serverName || t('servers.deletedServer')}</td>}
         <td><Status status={job.status} /></td>
-        <td className="relative z-10 text-muted-foreground"><Time value={job.startedAt} relative /></td>
+        <td className="text-muted-foreground"><Time value={job.startedAt} relative /></td>
         <td className="whitespace-nowrap text-xs text-muted-foreground tabular-nums">{formatDuration(job.startedAt, job.endedAt)}</td>
         <td><ExitCode job={job} /></td>
       </tr>)}</tbody>
