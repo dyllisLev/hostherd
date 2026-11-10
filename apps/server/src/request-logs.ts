@@ -23,6 +23,9 @@ export interface RequestLogFilters {
 type ObjectValue = Record<string, unknown>;
 /** Completed request logs. Unfinished requests stay until they end. */
 const REQUEST_LOG_RETENTION_MS = 7 * 86400_000;
+/** Long-lived notification stream; the client closing it is its normal end. */
+const LISTEN_METHOD = 'subscriptions/listen';
+const STATELESS_METHODS = new Set(['GET', 'DELETE']);
 const COMMAND_TOOLS = new Set(['job_start', 'job_input', 'job_cancel']);
 /** Tool errors that mean the command policy held the call, not that it failed. */
 const HELD_CODES = new Set(['APPROVAL_REQUIRED', 'APPROVAL_DENIED', 'COMMAND_BLOCKED']);
@@ -184,9 +187,17 @@ export class RequestLogs {
           if (ctx.record.endedAt) return;
           ctx.record.endedAt = new Date().toISOString(); ctx.record.durationMs = Math.round(performance.now() - ctx.started);
           ctx.record.httpStatus = res.statusCode;
-          if (closed && !res.writableFinished) {
+          if (closed && !res.writableFinished && ctx.record.method === LISTEN_METHOD) {
+            // A listen stream stays open until the client hangs up; that is its normal end.
+            ctx.record.outcome = 'success';
+          } else if (closed && !res.writableFinished) {
             ctx.record.outcome = 'unknown'; ctx.record.failureStage = 'response';
             ctx.record.errorCode = 'RESPONSE_INTERRUPTED'; ctx.record.error = 'The response connection closed early. Check whether the linked job ran.';
+          } else if (res.statusCode === 405 && STATELESS_METHODS.has(req.method)) {
+            // The endpoint is stateless: GET (standalone SSE) and DELETE (session end) are
+            // answered 405 as the MCP transport allows. Clients probe both; it is not a failure.
+            ctx.record.outcome = 'success';
+            delete ctx.record.failureStage; delete ctx.record.errorCode; delete ctx.record.error; delete ctx.record.jsonRpcErrorCode;
           } else if (ctx.record.outcome === 'pending') ctx.record.outcome = res.statusCode >= 400 ? 'error' : 'success';
           this.event('response', ctx.record.outcome, { httpStatus: res.statusCode, durationMs: ctx.record.durationMs }, ctx);
         };
