@@ -335,6 +335,35 @@ test('a disconnected MCP response records an uncertain delivery while the agent 
   assert.ok(detail.request.errorCode || detail.events.some(event => /clos|abort|disconnect/.test(JSON.stringify(event))), 'disconnect reason stays visible');
 });
 
+test('closing a listen stream and the stateless GET/DELETE 405 replies are not recorded as failures', async t => {
+  const f = await fixture(t);
+  const rpcId = 'listen-' + randomUUID();
+  const payload = JSON.stringify({ jsonrpc: '2.0', id: rpcId, method: 'subscriptions/listen', params: {
+    _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientInfo': { name: 'listen-test', version: '1.0.0' }, 'io.modelcontextprotocol/clientCapabilities': {} },
+    notifications: { toolsListChanged: true },
+  } });
+  const request = httpRequest(f.base + '/mcp', { method: 'POST', headers: { Authorization: 'Bearer ' + f.pat.token, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'Mcp-Method': 'subscriptions/listen', 'MCP-Protocol-Version': '2026-07-28', 'Content-Length': Buffer.byteLength(payload) } });
+  request.on('error', () => {});
+  const opened = new Promise<void>(resolve => request.on('response', response => { response.resume(); resolve(); }));
+  request.end(payload);
+  await opened;
+  await delay(50);
+  request.destroy();
+  const listen = await eventually(() => f.get<Listing>('/api/request-logs?q=' + encodeURIComponent(rpcId)), list => list.items.length === 1 && list.items[0].outcome !== 'pending', 'listen stream is finalized');
+  assert.equal(listen.items[0].method, 'subscriptions/listen');
+  assert.equal(listen.items[0].outcome, 'success', 'the client hanging up is how a listen stream ends: ' + JSON.stringify(listen.items[0]));
+  assert.equal(listen.items[0].errorCode, undefined);
+  for (const method of ['GET', 'DELETE']) {
+    const response = await fetch(f.base + '/mcp', { method, headers: { Authorization: 'Bearer ' + f.pat.token, Accept: 'application/json, text/event-stream' } });
+    assert.equal(response.status, 405, `${method} stays unsupported on the stateless endpoint`);
+    await response.text();
+    const traced = await f.detail(response.headers.get('X-Hostherd-Trace-Id')!);
+    assert.equal(traced.request.httpStatus, 405);
+    assert.equal(traced.request.outcome, 'success', `${method} 405 is a protocol answer, not a failure`);
+    assert.equal(traced.request.errorCode, undefined);
+  }
+});
+
 test('request logs survive reopening, recover unfinished requests and retain only seven days after completion', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'hostherd-trace-retention-'));
   let store = new Store(dir);

@@ -4,6 +4,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync, chmodSync, existsSync } from 'node:fs';
 import { open, unlink } from 'node:fs/promises';
 import path from 'node:path';
+import { enableIncrementalVacuum, reclaimSpace } from './sqlite-space.js';
 
 export const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 export const LANGUAGES = ['en', 'ko'] as const;
@@ -79,6 +80,7 @@ export class Store extends EventEmitter {
     mkdirSync(this.outputDir, { recursive: true, mode: 0o700 });
     this.db = new Database(path.join(dataDir, 'hostherd.sqlite'));
     chmodSync(path.join(dataDir, 'hostherd.sqlite'), 0o600);
+    enableIncrementalVacuum(this.db);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = FULL');
     this.db.pragma('foreign_keys = ON');
@@ -340,18 +342,23 @@ export class Store extends EventEmitter {
     }
     this.db.prepare('DELETE FROM requests WHERE job_id IN (SELECT id FROM jobs WHERE expired=1)').run();
     this.db.prepare('DELETE FROM enrollments WHERE expires_at<?').run(new Date(now).toISOString());
+    // Request logs, audit events and approvals are pruned just before this in the same hourly pass.
+    reclaimSpace(this.db);
   }
   /** Mark open jobs whose result never arrived. Rows stay until the normal retention cutoff. */
   private closeStaleJobs(now: number, connected: (serverId: string) => boolean) {
     const cutoff = new Date(now - STALE_OPEN_JOB_MS).toISOString();
     const endedAt = new Date(now).toISOString();
-    const rows = this.db.prepare(`SELECT id, server_id, state FROM jobs WHERE expired=0 AND status IN ('pending','running','unknown')
-      AND (started_at IS NULL OR started_at<?)`).all(cutoff) as { id: string; server_id: string; state: string }[];
+    const rows = this.db.prepare(`SELECT id, server_id, state, status FROM jobs WHERE expired=0 AND status IN ('pending','running','unknown')
+      AND (started_at IS NULL OR started_at<?)`).all(cutoff) as { id: string; server_id: string; state: string; status: string }[];
     const update = this.db.prepare(`UPDATE jobs SET state=?, status='lost', ended_at=? WHERE id=? AND expired=0 AND status IN ('pending','running','unknown')`);
     const changed = this.db.transaction(() => {
       const updated: { id: string; serverId: string }[] = [];
       for (const row of rows) {
-        if (connected(row.server_id)) continue;
+        // A connected agent syncs every job it knows on reconnect, so a running job on it
+        // can still report. A job still pending or unknown after the cutoff never reached
+        // that agent (or was lost), and would otherwise stay open and never expire.
+        if (row.status === 'running' && connected(row.server_id)) continue;
         const state = JSON.parse(row.state) as Record<string, unknown>;
         state.status = 'lost';
         state.endedAt = endedAt;

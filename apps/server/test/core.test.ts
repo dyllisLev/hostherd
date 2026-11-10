@@ -66,7 +66,7 @@ test('output is byte-exact across retransmission and reopening; retention only r
   } finally { store.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
-test('stale open jobs are closed as lost; fresh jobs and jobs on a connected agent stay open', async () => {
+test('stale open jobs are closed as lost; fresh jobs and running jobs on a connected agent stay open', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'hostherd-stale-jobs-'));
   const store = new Store(dir);
   try {
@@ -91,8 +91,9 @@ test('stale open jobs are closed as lost; fresh jobs and jobs on a connected age
     assert.equal(store.job(freshUnknown).status, 'unknown');
     assert.equal(store.job(freshUnknown).endedAt, undefined);
     assert.equal(store.job(staleRunning).status, 'lost');
-    assert.equal(store.job(liveUnknown).status, 'unknown');
-    assert.equal(store.job(liveUnknown).endedAt, undefined);
+    // A connected agent would have synced a job it knew; one still unknown after the cutoff never reached it.
+    assert.equal(store.job(liveUnknown).status, 'lost');
+    assert.ok(store.job(liveUnknown).endedAt);
     assert.equal(store.job(liveRunning).status, 'running');
     assert.equal(store.job(liveRunning).endedAt, undefined);
     store.saveJob(offline, job(staleUnknown, 'running', stale, 'gone'));

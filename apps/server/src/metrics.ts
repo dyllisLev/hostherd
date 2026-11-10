@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { chmodSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
+import { enableIncrementalVacuum, reclaimSpace } from './sqlite-space.js';
 
 // Resource samples live in their own database: frequent small writes do not
 // need the job store's synchronous=FULL durability.
@@ -33,6 +34,7 @@ export class MetricsStore {
     const file = path.join(dataDir, 'metrics.sqlite');
     this.db = new Database(file);
     chmodSync(file, 0o600);
+    enableIncrementalVacuum(this.db);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     const columns = 'server_id TEXT NOT NULL, at INTEGER NOT NULL, cpu REAL, cpu_max REAL, load1 REAL, mem_used REAL, mem_total REAL, disk_pct REAL, net_rx REAL, net_tx REAL, PRIMARY KEY (server_id, at)';
@@ -132,6 +134,7 @@ export class MetricsStore {
     this.db.prepare('DELETE FROM rollup_5m WHERE at<?').run(at - FIVE_MIN_RETENTION);
     this.db.prepare('DELETE FROM rollup_1h WHERE at<?').run(at - HOUR_RETENTION);
     this.db.prepare('DELETE FROM server_events WHERE at<?').run(now - EVENT_RETENTION * 1000);
+    reclaimSpace(this.db);
   }
 
   /** Removes a deleted server's samples. */
