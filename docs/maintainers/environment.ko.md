@@ -18,7 +18,6 @@
 - 작업 경로: `/workspace/hostherd` (`origin` = `https://github.com/dyllisLev/hostherd.git`)
 - 브랜치별 작업은 `/workspace/hostherd-wt-*` 같은 git worktree를 따로 만들어 진행합니다.
 - 설치된 도구: Node.js 22, npm 11, Docker 29. Go는 호스트에 없으므로 에이전트 테스트는 Docker로 돌립니다.
-- `paseo.json`에 worktree 준비와 실행 스크립트가 정의되어 있습니다.
 
 자주 쓰는 명령(저장소 루트에서):
 
