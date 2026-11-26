@@ -1259,3 +1259,21 @@ func TestMetricsAreReportedOnlyWhenTheCentralAsks(t *testing.T) {
 		})
 	}
 }
+
+func TestMissingJobExplainsExpiredAndUnknownIDs(t *testing.T) {
+	root := t.TempDir()
+	expired := "11111111-1111-4111-8111-111111111111"
+	unknown := "22222222-2222-4222-8222-222222222222"
+	if err := os.MkdirAll(filepath.Join(root, "tombstones"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tombstones", expired+".json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err, ok := missingJob(root, expired).(*model.RPCError); !ok || err.Code != "JOB_EXPIRED" {
+		t.Fatalf("expired = %v", missingJob(root, expired))
+	}
+	if err, ok := missingJob(root, unknown).(*model.RPCError); !ok || err.Code != "JOB_NOT_FOUND" {
+		t.Fatalf("unknown = %v", missingJob(root, unknown))
+	}
+}

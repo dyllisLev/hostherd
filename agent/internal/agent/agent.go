@@ -238,6 +238,9 @@ const (
 	runnerProbeTimeout  = time.Second
 	// Stay under the central WebSocket frame limit (12 MiB).
 	stateBatchLimit = 8 << 20
+	// A larger response would make central close the whole connection, which
+	// drops every running RPC of this server. Answer with an error instead.
+	responseLimit = 11 << 20
 )
 
 type pendingState struct {
@@ -633,6 +636,18 @@ func (c *connection) syncJobs() error {
 	}
 	return c.flushStates(&pending)
 }
+
+// missingJob explains a job ID this server has no record of: either retention
+// removed it, or job.start has not created it yet.
+func missingJob(root, id string) error {
+	if store.ValidateID(id) == nil {
+		if _, err := os.Stat(filepath.Join(root, "tombstones", id+".json")); err == nil {
+			return &model.RPCError{Code: "JOB_EXPIRED", Message: "This job finished more than 30 days ago and its record was removed from the server."}
+		}
+	}
+	return &model.RPCError{Code: "JOB_NOT_FOUND", Message: "The server has no record of this job. It may not have started yet."}
+}
+
 func isRuntimeFault(job model.Job) bool {
 	if job.Error == "" {
 		return false
@@ -654,10 +669,15 @@ func (c *connection) respond(ctx context.Context, request model.Request) {
 			response.Error = rpcErr
 		}
 	}
-	if ctx.Err() == nil {
-		if err = c.send(response); err != nil {
-			c.ws.Close()
-		}
+	if ctx.Err() != nil {
+		return
+	}
+	if b, marshalErr := json.Marshal(response); marshalErr == nil && len(b) > responseLimit {
+		response.Result = nil
+		response.Error = &model.RPCError{Code: "RESPONSE_TOO_LARGE", Message: fmt.Sprintf("The result of %s is %d bytes, over the %d-byte limit. Request a smaller part, for example a narrower path or a smaller limit.", request.Method, len(b), responseLimit)}
+	}
+	if err = c.send(response); err != nil {
+		c.ws.Close()
 	}
 }
 func (c *connection) dispatch(ctx context.Context, request model.Request) (any, error) {
@@ -705,6 +725,9 @@ func (c *connection) dispatch(ctx context.Context, request model.Request) (any, 
 			return nil, err
 		}
 		record, err := store.ReadRecord(c.c.StateDir, p.ID)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, missingJob(c.c.StateDir, p.ID)
+		}
 		if err != nil {
 			return nil, err
 		}

@@ -199,6 +199,25 @@ test('MCP request logs correlate real transport, jobs, RPCs and retries without 
   assert.equal(future.items.length, 0);
 });
 
+test('a request rewrites its log record only when it changed, and the stored record is complete', async t => {
+  const f = await fixture(t);
+  const seq = () => (f.app.store.db.prepare("SELECT seq FROM sqlite_sequence WHERE name='request_logs'").get() as { seq: number } | undefined)?.seq ?? 0;
+  const before = seq();
+  const response = await fetch(f.base + '/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: 'Bearer ' + f.pat.token }, body: JSON.stringify({ jsonrpc: '2.0', id: 'writes', method: 'tools/call', params: { name: 'servers_list', arguments: {} } }) });
+  await response.text();
+  const traceId = response.headers.get('X-Hostherd-Trace-Id')!;
+  const traced = await f.detail(traceId);
+  assert.equal(traced.request.tool, 'servers_list');
+  assert.equal(traced.request.outcome, 'success');
+  assert.equal(traced.request.subject !== undefined || traced.request.clientId !== undefined, true, 'authentication fields reach the stored record');
+  const events = (f.app.store.db.prepare('SELECT COUNT(*) n FROM request_log_events WHERE trace_id=?').get(traceId) as { n: number }).n;
+  // Each record upsert advances the AUTOINCREMENT sequence. Field updates wait for
+  // the next stage event and unchanged records are skipped: this call wrote the
+  // record 24 times for 9 events before, about once per event now.
+  const writes = seq() - before;
+  assert.ok(writes <= events + 1, `record writes ${writes} for ${events} events`);
+});
+
 test('request logs retain authentication, parse, SDK and remote errors separately from HTTP status', async t => {
   const f = await fixture(t);
   for (const route of ['/mcp/', '/MCP']) {

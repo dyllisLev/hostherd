@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -17,6 +18,10 @@ import (
 const (
 	defaultReadLimit = 64 * 1024
 	maxReadLimit     = 512 * 1024 // Base64 plus metadata remains below 1 MiB.
+	// A listing stays far below the central WebSocket frame limit (12 MiB)
+	// even for directories such as a crowded /tmp. Extra entries are dropped
+	// and the result says so.
+	maxListEntries = 10000
 )
 
 type Entry struct {
@@ -28,7 +33,16 @@ type Entry struct {
 }
 
 type ListResult struct {
-	Entries []Entry `json:"entries"`
+	Entries   []Entry `json:"entries"`
+	Truncated bool    `json:"truncated,omitempty"`
+}
+
+// StatResult answers whether one path exists without reading its directory.
+type StatResult struct {
+	Exists     bool   `json:"exists"`
+	Type       string `json:"type,omitempty"`
+	Size       int64  `json:"size,omitempty"`
+	ModifiedAt string `json:"modifiedAt,omitempty"`
 }
 
 type ReadResult struct {
@@ -51,6 +65,8 @@ func Handle(method string, params json.RawMessage) (any, error) {
 	switch method {
 	case "file.list":
 		return list(params)
+	case "file.stat":
+		return stat(params)
 	case "file.read":
 		return read(params)
 	case "file.image":
@@ -114,31 +130,71 @@ func list(raw json.RawMessage) (any, error) {
 	if err := validatePath(p.Path); err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(p.Path)
+	dir, err := os.Open(p.Path)
 	if err != nil {
 		return nil, err
 	}
-	result := ListResult{Entries: make([]Entry, 0, len(entries))}
+	defer dir.Close()
+	// Read one past the cap to know whether entries were left out.
+	entries, err := dir.ReadDir(maxListEntries + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	result := ListResult{}
+	if len(entries) > maxListEntries {
+		entries = entries[:maxListEntries]
+		result.Truncated = true
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	result.Entries = make([]Entry, 0, len(entries))
 	for _, entry := range entries {
 		info, err := entry.Info() // Lstat semantics retain symlink identity.
+		if errors.Is(err, os.ErrNotExist) {
+			continue // Removed while listing.
+		}
 		if err != nil {
 			return nil, err
 		}
-		typ := "other"
-		switch {
-		case info.Mode()&os.ModeSymlink != 0:
-			typ = "symlink"
-		case info.IsDir():
-			typ = "directory"
-		case info.Mode().IsRegular():
-			typ = "file"
-		}
+		typ := entryType(info)
 		result.Entries = append(result.Entries, Entry{
 			Name: entry.Name(), Type: typ, Size: info.Size(),
 			Mode: uint32(info.Mode().Perm()), ModifiedAt: info.ModTime().UTC().Format(time.RFC3339Nano),
 		})
 	}
 	return result, nil
+}
+
+func entryType(info os.FileInfo) string {
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		return "symlink"
+	case info.IsDir():
+		return "directory"
+	case info.Mode().IsRegular():
+		return "file"
+	}
+	return "other"
+}
+
+// stat reports one path with Lstat semantics. A missing path is not an error.
+func stat(raw json.RawMessage) (any, error) {
+	var p struct {
+		Path string `json:"path"`
+	}
+	if err := decode(raw, &p); err != nil {
+		return nil, err
+	}
+	if err := validatePath(p.Path); err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(p.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		return StatResult{Exists: false}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return StatResult{Exists: true, Type: entryType(info), Size: info.Size(), ModifiedAt: info.ModTime().UTC().Format(time.RFC3339Nano)}, nil
 }
 
 func read(raw json.RawMessage) (any, error) {
