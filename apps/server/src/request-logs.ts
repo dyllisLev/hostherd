@@ -15,7 +15,8 @@ export interface RequestLog {
   errorCode?: string | number; error?: string; failureStage?: string;
   mcpIsError?: boolean; jsonRpcErrorCode?: number; incomplete?: boolean;
 }
-interface TraceContext { record: RequestLog; started: number; toolEntered: boolean }
+/** written: the record JSON last stored, so an unchanged record is not rewritten. */
+interface TraceContext { record: RequestLog; started: number; toolEntered: boolean; written?: string }
 export interface RequestLogFilters {
   from?: string; to?: string; serverId?: string; tool?: string; outcome?: RequestOutcome;
   q?: string; cursor?: string; limit?: number;
@@ -146,22 +147,34 @@ export class RequestLogs {
   collection() { return { startedAt: this.startedAt, status: this.failedWrites ? 'degraded' as const : 'ok' as const, failedWrites: this.failedWrites, lastErrorAt: this.lastErrorAt }; }
   current() { return this.context.getStore(); }
 
-  private persist(record: RequestLog, stage?: string, status?: string, data?: unknown) {
-    this.safe(() => this.store.db.transaction(() => {
-      this.store.db.prepare(`INSERT INTO request_logs (trace_id,received_at,ended_at,server_id,tool,outcome,record) VALUES (?,?,?,?,?,?,?)
+  /**
+   * One transaction per stage event. The record row is rewritten only when it
+   * changed since the last write: a request has about ten events, and rewriting
+   * the whole record (and its indexes) for each one was most of the log I/O.
+   */
+  private persist(record: RequestLog, stage?: string, status?: string, data?: unknown, ctx?: TraceContext) {
+    const json = JSON.stringify(record);
+    const writeRecord = !ctx || ctx.written !== json;
+    if (!writeRecord && !stage) return;
+    const stored = this.safe(() => this.store.db.transaction(() => {
+      if (writeRecord) this.store.db.prepare(`INSERT INTO request_logs (trace_id,received_at,ended_at,server_id,tool,outcome,record) VALUES (?,?,?,?,?,?,?)
         ON CONFLICT(trace_id) DO UPDATE SET ended_at=excluded.ended_at,server_id=excluded.server_id,tool=excluded.tool,outcome=excluded.outcome,record=excluded.record`)
-        .run(record.traceId, record.receivedAt, record.endedAt ?? null, record.serverId ?? null, record.tool ?? null, record.outcome, JSON.stringify(record));
+        .run(record.traceId, record.receivedAt, record.endedAt ?? null, record.serverId ?? null, record.tool ?? null, record.outcome, json);
       if (stage) this.store.db.prepare('INSERT INTO request_log_events (trace_id,at,stage,status,data) VALUES (?,?,?,?,?)')
         .run(record.traceId, new Date().toISOString(), stage, status ?? 'info', data === undefined ? null : JSON.stringify(sanitize(data)));
+      return true;
     })());
+    if (stored && writeRecord && ctx) ctx.written = json;
   }
 
   event(stage: string, status: string, data?: unknown, ctx = this.current()) {
-    if (ctx) this.persist(ctx.record, stage, status, data);
+    if (ctx) this.persist(ctx.record, stage, status, data, ctx);
   }
+  /** Field changes travel with the next stage event; every request ends with one. After the end they are written at once. */
   update(fields: Partial<RequestLog>, ctx = this.current()) {
     if (!ctx) return;
-    Object.assign(ctx.record, Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, typeof value === 'string' ? redactText(value) : value]))); this.persist(ctx.record);
+    Object.assign(ctx.record, Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, typeof value === 'string' ? redactText(value) : value])));
+    if (ctx.record.endedAt) this.persist(ctx.record, undefined, undefined, undefined, ctx);
   }
   failure(stage: string, error: unknown, ctx = this.current()) {
     if (!ctx) return;

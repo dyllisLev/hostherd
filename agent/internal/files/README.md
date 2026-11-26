@@ -18,6 +18,15 @@ These sessions do not automatically resume after a central or runner restart.
 
 - `file.list` returns lexical entry order, `file` / `directory` / `symlink` /
   `other` types, numeric Unix permission bits, and UTC modification timestamps.
+  It returns at most 10,000 entries and sets `truncated` when the directory has
+  more, so a crowded directory such as `/tmp` cannot exceed the 12 MiB
+  WebSocket frame that central accepts.
+- `file.stat` reports one path with Lstat semantics: `exists`, and for an
+  existing path its type, size and modification time. A missing path is
+  `exists: false`, not an error. Central uses it to decide whether a write
+  replaces a file.
+- Any RPC response larger than 11 MiB is replaced with a `RESPONSE_TOO_LARGE`
+  error, so one oversized answer never closes the agent connection.
 - `file.read` uses byte offsets, base64 data, and a default 64 KiB raw chunk. A
   larger requested limit is clamped to 512 KiB so the JSON response stays below
   1 MiB. A zero limit selects the default; a negative offset or limit is invalid.

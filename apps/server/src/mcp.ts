@@ -138,7 +138,22 @@ export function mountMcp(app: Express, hub: AgentHub, authenticate: Authenticato
       return { ...output, ...chunk, nextCursor: cursor + length, eof: eof && length === bytes.length };
     }
     const isWindows = (serverId: string) => hub.store.server(serverId).os === 'windows';
+    // One stat of the target. Listing the parent instead can return more than
+    // the agent connection carries (a /tmp with 300k entries closed it).
     async function exists(serverId: string, target: string) {
+      try {
+        const result = await hub.rpc<{ exists: boolean }>(serverId, 'file.stat', { path: target });
+        if (typeof result?.exists === 'boolean') return result.exists;
+      } catch (error) {
+        if (!(error instanceof AppError && /unknown file method/.test(error.message))) {
+          // An unreadable parent may still hold the file; an offline server fails the write itself.
+          return hub.online(serverId);
+        }
+      }
+      return existsByListing(serverId, target);
+    }
+    /** Agents before file.stat: look the name up in the parent listing. */
+    async function existsByListing(serverId: string, target: string) {
       const api = isWindows(serverId) ? path.win32 : path.posix;
       try {
         const { entries } = await hub.rpc<{ entries: { name: string }[] }>(serverId, 'file.list', { path: api.dirname(target) });
@@ -204,8 +219,18 @@ export function mountMcp(app: Express, hub: AgentHub, authenticate: Authenticato
     add('job_status', 'Read a job state by jobId, reconciling with the target when online.', { jobId }, async ({ jobId }) => {
       let job = hub.store.job(jobId);
       if (hub.online(job.serverId) && ['running', 'unknown', 'pending'].includes(job.status)) {
-        const state = await hub.rpc<Omit<typeof job, 'serverId' | 'outputBytes'>>(job.serverId, 'job.status', { id: jobId });
-        hub.store.saveJob(job.serverId, state); job = hub.store.job(jobId);
+        try {
+          const state = await hub.rpc<Omit<typeof job, 'serverId' | 'outputBytes'>>(job.serverId, 'job.status', { id: jobId });
+          hub.store.saveJob(job.serverId, state); job = hub.store.job(jobId);
+        } catch (error) {
+          // The target has no record yet (job.start still on its way) or any more
+          // (retention). Older agents answer with a raw lstat error. Report the
+          // state central knows instead of the file system message.
+          if (!(error instanceof AppError && (['JOB_NOT_FOUND', 'JOB_EXPIRED'].includes(error.code) || /no such file or directory|cannot find the (file|path)/i.test(error.message)))) throw error;
+          const note = error.code === 'JOB_EXPIRED' ? 'The server removed this job after its retention period; this is the last state central recorded.'
+            : 'The server has no record of this job yet; this is the last state central recorded. Check again shortly.';
+          return { ...job, serverOnline: hub.online(job.serverId), note };
+        }
       }
       return { ...job, serverOnline: hub.online(job.serverId) };
     }, readOnly);
@@ -220,7 +245,7 @@ export function mountMcp(app: Express, hub: AgentHub, authenticate: Authenticato
       return hub.rpc(job.serverId, 'job.input', { id: jobId, ...input });
     });
     add('job_cancel', 'Stop a job and its managed child processes.', { jobId }, ({ jobId }) => hub.rpc(hub.store.job(jobId).serverId, 'job.cancel', { id: jobId }), destructive);
-    add('file_list', 'List directory entries on a server, using its registered execution account.', { serverId, path: absolutePath.describe('Absolute directory path to list on the target server. Example: /var/log.') }, ({ serverId, ...params }) => hub.rpc(serverId, 'file.list', params), readOnly);
+    add('file_list', 'List directory entries on a server, using its registered execution account. At most 10,000 entries are returned; truncated is true when more exist.', { serverId, path: absolutePath.describe('Absolute directory path to list on the target server. Example: /var/log.') }, ({ serverId, ...params }) => hub.rpc(serverId, 'file.list', params), readOnly);
     add('image_read', 'Use this to SEE a saved screenshot, chart or other PNG/JPEG image. Returns actual MCP image content and file metadata, with original bytes preserved. Example: {"serverId":"<target server ID>","path":"/tmp/screenshot.png"}. To capture a webpage, first run your installed headless browser through job_start, wait for that job to complete successfully, then call image_read with the SAME serverId and the saved absolute FILE path. If Playwright and Chrome are already installed, an example capture cmd is: npx --no-install playwright screenshot --channel=chrome https://example.com /tmp/screenshot.png (run in the project directory containing Playwright). This tool reads an existing file; it does not open URLs or take screenshots. Do not pass a directory, URL, jobId or base64 data in path. No preliminary file_list/file_read call is needed. Maximum 8 MiB and 24 million pixels; save a smaller/cropped image when necessary.', {
       serverId,
       path: absolutePath.describe('Absolute path to an existing PNG/JPEG image FILE on this target server, readable by its registered execution account. Example: /tmp/screenshot.png. Not a URL, directory, local-client path, jobId or base64 string. Wait for the screenshot-writing job to complete first.').meta({ examples: ['/tmp/screenshot.png', '/tmp/chart.jpg'] }),
@@ -239,7 +264,15 @@ export function mountMcp(app: Express, hub: AgentHub, authenticate: Authenticato
       return { ...result, ...chunk, nextOffset: result.nextOffset - (bytes.length - length), eof: result.eof && length === bytes.length };
     }, readOnly);
     add('file_search', 'Search literal text recursively within a path; paginated matches contain file paths and line numbers.', { serverId, path: absolutePath, query: z.string().min(1), offset: page.offset, limit: z.number().int().min(1).max(1000).default(100) }, ({ serverId, ...params }) => hub.rpc(serverId, 'file.search', params), readOnly);
-    add('file_write', 'Create or replace a file using UTF-8 text or base64 data. Set createOnly to avoid replacing an existing file.', { serverId, path: absolutePath, data: z.string(), encoding: z.enum(['utf8', 'base64']).default('utf8'), createOnly: z.boolean().default(false) }, async ({ serverId, ...params }, context) => {
+    add('file_write', 'Create or replace a file using UTF-8 text or base64 data. Put the file content in data (content is accepted as an alias). Set createOnly to avoid replacing an existing file.', {
+      serverId, path: absolutePath, data: z.string().optional().describe('File content: UTF-8 text, or base64 when encoding is base64.'),
+      content: z.string().optional().describe('Alias of data, for clients that name the field content. Use only one of them.'),
+      encoding: z.enum(['utf8', 'base64']).default('utf8'), createOnly: z.boolean().default(false),
+    }, async ({ serverId, content, data: given, ...rest }, context) => {
+      if (given !== undefined && content !== undefined && given !== content) throw new AppError('INVALID_ARGUMENTS', 'Pass the file content in data or content, not both.');
+      const data = given ?? content;
+      if (data === undefined) throw new AppError('INVALID_ARGUMENTS', 'data is required: pass the file content in data (UTF-8 text, or base64 with encoding "base64").');
+      const params = { ...rest, data };
       if (!params.createOnly && await exists(serverId, params.path)) {
         guard(serverId, 'file_write', params.path, params.path, { path: params.path, data: hash(params.data), encoding: params.encoding }, [{ rule: 'file-overwrite', targets: [params.path] }], context);
       }

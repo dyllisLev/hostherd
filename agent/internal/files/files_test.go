@@ -286,3 +286,45 @@ func TestSearchResponseBytesAndPagination(t *testing.T) {
 		t.Fatalf("unexpected bounded pages: matches=%d pages=%d", offset, pages)
 	}
 }
+
+func TestStatReportsOnePathWithoutListing(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.txt")
+	writeFixture(t, file, []byte("abc"), 0600)
+	got := call(t, "file.stat", map[string]any{"path": file}).(StatResult)
+	if !got.Exists || got.Type != "file" || got.Size != 3 {
+		t.Fatalf("stat file = %+v", got)
+	}
+	got = call(t, "file.stat", map[string]any{"path": dir}).(StatResult)
+	if !got.Exists || got.Type != "directory" {
+		t.Fatalf("stat dir = %+v", got)
+	}
+	got = call(t, "file.stat", map[string]any{"path": filepath.Join(dir, "missing")}).(StatResult)
+	if got.Exists {
+		t.Fatalf("missing path reported as existing: %+v", got)
+	}
+	callError(t, "file.stat", map[string]any{"path": "relative"})
+}
+
+func TestListStopsAtEntryCap(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < maxListEntries+5; i++ {
+		writeFixture(t, filepath.Join(dir, fmt.Sprintf("f%05d", i)), nil, 0600)
+	}
+	got := call(t, "file.list", map[string]any{"path": dir}).(ListResult)
+	if len(got.Entries) != maxListEntries || !got.Truncated {
+		t.Fatalf("entries=%d truncated=%v", len(got.Entries), got.Truncated)
+	}
+	for i := 1; i < len(got.Entries); i++ {
+		if got.Entries[i-1].Name >= got.Entries[i].Name {
+			t.Fatalf("entries are not sorted at %d", i)
+		}
+	}
+	small := t.TempDir()
+	writeFixture(t, filepath.Join(small, "b"), nil, 0600)
+	writeFixture(t, filepath.Join(small, "a"), nil, 0600)
+	got = call(t, "file.list", map[string]any{"path": small}).(ListResult)
+	if got.Truncated || len(got.Entries) != 2 || got.Entries[0].Name != "a" {
+		t.Fatalf("small listing = %+v", got)
+	}
+}

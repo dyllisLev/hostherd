@@ -69,6 +69,13 @@ test('MCP destructive calls wait for web approval, follow rule modes and allowed
     if (m.type !== 'request') return;
     calls.push({ method: m.method, params: m.params });
     let result: unknown = { ok: true };
+    if (m.method === 'file.stat') {
+      const target = m.params.path ?? '';
+      if (target.startsWith('/locked/')) { ws.send(JSON.stringify({ type: 'response', id: m.id, error: { code: 'permission_denied', message: 'permission denied' } })); return; }
+      // An agent from before file.stat.
+      if (target.startsWith('/legacy/')) { ws.send(JSON.stringify({ type: 'response', id: m.id, error: { code: 'operation_failed', message: 'unknown file method "file.stat"' } })); return; }
+      result = target.endsWith('/existing.txt') ? { exists: true, type: 'file', size: 1 } : { exists: false };
+    }
     if (m.method === 'file.list' && m.params.path === '/locked') { ws.send(JSON.stringify({ type: 'response', id: m.id, error: { code: 'permission_denied', message: 'permission denied' } })); return; }
     if (m.method === 'file.list') result = { entries: [{ name: 'existing.txt', type: 'file', size: 1, mode: 420, modifiedAt: new Date().toISOString() }, { name: 'app', type: 'directory', size: 0, mode: 493, modifiedAt: new Date().toISOString() }] };
     if (m.method === 'job.start') {
@@ -163,6 +170,19 @@ test('MCP destructive calls wait for web approval, follow rule modes and allowed
   assert.equal((await call('file_write', { serverId, path: '/home/u/proj/existing.txt', data: 'x' })).isError, false);
   // A parent that cannot be listed may hold the file, so the overwrite rule applies.
   assert.equal((await call('file_write', { serverId, path: '/locked/a.txt', data: 'x' })).body.code, 'APPROVAL_REQUIRED');
+  // The check stats the one path; it never lists the parent (a huge /tmp once closed the agent connection).
+  assert.ok(!calls.some(c => c.method === 'file.list' && c.params.path === '/etc'));
+  // Agents without file.stat fall back to the parent listing.
+  assert.equal((await call('file_write', { serverId, path: '/legacy/existing.txt', data: 'x' })).body.code, 'APPROVAL_REQUIRED');
+  assert.equal((await call('file_write', { serverId, path: '/legacy/new.txt', data: 'x' })).isError, false);
+  // content is accepted as an alias of data; one of them is required.
+  assert.equal((await call('file_write', { serverId, path: '/etc/new2.txt', content: 'hello' })).isError, false);
+  assert.equal(calls.filter(c => c.method === 'file.write').at(-1)?.params.path, '/etc/new2.txt');
+  assert.equal((calls.filter(c => c.method === 'file.write').at(-1)?.params as { data?: string }).data, 'hello');
+  assert.equal((await call('file_write', { serverId, path: '/etc/existing.txt', content: 'x' })).body.code, 'APPROVAL_REQUIRED');
+  const missing = await call('file_write', { serverId, path: '/etc/none.txt' });
+  assert.equal(missing.isError, true);
+  assert.equal(missing.body.code, 'INVALID_ARGUMENTS');
   // file_edit follows the in-place edit rule and its allowed folders.
   const edit = await call('file_edit', { serverId, path: '/etc/hosts', oldText: 'a', newText: 'b' });
   assert.equal(edit.body.code, 'APPROVAL_REQUIRED');
